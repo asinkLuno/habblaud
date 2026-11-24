@@ -282,4 +282,41 @@ describe('PiSource (arquivos + extensão ao vivo) e PiHistory', () => {
 
     source.stop();
   });
+
+  it('mapeia sessionFile do host para o diretório montado no Docker em eventos ao vivo', () => {
+    const home = makeTmp();
+    const dataDir = makeTmp();
+    const { piDir, sessionFile, sessionId, cwd } = makePiTree(home);
+    const hostPiDir = '/host/user/.pi/agent';
+    const hostSessionFile = `${hostPiDir}${sessionFile.slice(piDir.length)}`;
+    const nowMs = Date.now();
+    const now = () => nowMs;
+
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp: new Date(nowMs - 5_000).toISOString(), cwd }),
+        JSON.stringify({
+          type: 'message',
+          id: 'u1',
+          parentId: null,
+          timestamp: new Date(nowMs - 4_000).toISOString(),
+          message: { role: 'user', content: [{ type: 'text', text: 'Testar Docker' }] },
+        }),
+      ].join('\n') + '\n',
+    );
+
+    const env = {
+      HABBLAUD_ACCOUNTS: JSON.stringify([{ id: '.pi', provider: 'pi', configDir: hostPiDir, mountDir: piDir, short: 'P', name: 'Pi', color: '#a77bf3' }]),
+    };
+    const accounts = new AccountsService({ dirs: [], home, env, onChange: () => {}, now });
+    const office = makeOffice(dataDir, accounts, now);
+    const source = new PiSource({ accounts, office, dirs: [piDir], home, env, now, watch: false, pollMs: 60_000 });
+
+    expect(source.applyLiveEvent(undefined, { type: 'session_start', sessionId, cwd, piDir: hostPiDir, sessionFile: hostSessionFile, idle: false })).toBe(true);
+    expect(source.transcriptPathOf(`.pi:${sessionId}`)).toBe(sessionFile);
+    expect(office.get(`.pi:${sessionId}`)?.title).toBe('Testar Docker');
+
+    source.stop();
+  });
 });

@@ -210,8 +210,8 @@ export class PiSource implements AgentSource, PiLive {
     const sessionId = str(input.sessionId);
     if (!type || !sessionId || !isPiSessionId(sessionId)) return false;
 
-    const sessionFile = str(input.sessionFile);
-    const acc = this.resolveAccount(accountId, str(input.piDir), sessionFile);
+    const rawSessionFile = str(input.sessionFile);
+    const acc = this.resolveAccount(accountId, str(input.piDir), rawSessionFile);
     if (!acc) return false;
 
     const now = this.now();
@@ -230,6 +230,7 @@ export class PiSource implements AgentSource, PiLive {
     // Novo evento de vida cancela shutdown anterior (ex.: sessão retomada com /resume).
     this.shutdownHistory.delete(id);
 
+    const sessionFile = this.resolveSessionFile(acc, rawSessionFile);
     const cwd = str(input.cwd);
     const s = this.getOrCreate(acc, sessionId, sessionFile, cwd, now);
     s.liveSeenAt = now;
@@ -491,6 +492,27 @@ export class PiSource implements AgentSource, PiLive {
       }
     }
     return this.accountsList.length === 1 ? this.accountsList[0] : undefined;
+  }
+
+  /**
+   * Traduz o `sessionFile` vindo da extensão no host para o caminho montado dentro do container (quando `acc.configDir`
+   * difere de `acc.dir`) e descarta caminhos fora de `acc.dir` ou inexistentes.
+   */
+  private resolveSessionFile(acc: PiAccount, raw: string | undefined): string | undefined {
+    if (!raw) return undefined;
+    const accDir = resolve(acc.dir);
+    const accConfigDir = resolve(acc.configDir);
+    let candidate = resolve(raw);
+    if (accDir !== accConfigDir && candidate.startsWith(accConfigDir + sep)) {
+      candidate = join(accDir, candidate.slice(accConfigDir.length + 1));
+    }
+    try {
+      const real = realpathSync(candidate);
+      const root = realpathSync(accDir);
+      return real.startsWith(root + sep) ? real : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private getOrCreate(acc: PiAccount, sessionId: string, path: string | undefined, cwd: string | undefined, now: number): TrackedSession {

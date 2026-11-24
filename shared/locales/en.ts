@@ -2034,7 +2034,7 @@ export const EN: Readonly<Record<string, string>> = {
   "[codex] Erro inesperado: {0}": "[codex] Unexpected error: {0}",
 
   // scripts/docker-up.ts
-  "Uso: npm run docker:up [-- opções]\n\nOpções:\n  --no-build   sobe sem reconstruir a imagem\n  --down       derruba o container (o mesmo que npm run docker:down)\n  -h, --help   mostra esta ajuda\n\nVariáveis: HABBLAUD_PORT (porta no host, padrão {0}), HABBLAUD_CLAUDE_DIRS\n(config dirs separados por vírgula, se as contas não estiverem em ~/.claude*), HABBLAUD_CODEX_DIRS\n(pastas do Codex, se não estiverem em ~/.codex* nem em CODEX_HOME) e HABBLAUD_CODEX=0 (sem o Codex).": "Usage: npm run docker:up [-- options]\n\nOptions:\n  --no-build   starts without rebuilding the image\n  --down       stops the container (same as npm run docker:down)\n  -h, --help   shows this help\n\nVariables: HABBLAUD_PORT (host port, default {0}), HABBLAUD_CLAUDE_DIRS\n(comma-separated config dirs, if the accounts aren't in ~/.claude*), HABBLAUD_CODEX_DIRS\n(Codex folders, if they aren't in ~/.codex* or CODEX_HOME) and HABBLAUD_CODEX=0 (without Codex).",
+  "Uso: npm run docker:up [-- opções]\n\nOpções:\n  --no-build   sobe sem reconstruir a imagem\n  --down       derruba o container (o mesmo que npm run docker:down)\n  -h, --help   mostra esta ajuda\n\nVariáveis: HABBLAUD_PORT (porta no host, padrão {0}), HABBLAUD_CLAUDE_DIRS\n(config dirs separados por vírgula, se as contas não estiverem em ~/.claude*), HABBLAUD_CODEX_DIRS\n(pastas do Codex, se não estiverem em ~/.codex* nem em CODEX_HOME), HABBLAUD_CODEX=0 (sem o Codex),\nHABBLAUD_ANTIGRAVITY_DIRS / HABBLAUD_ANTIGRAVITY=0 (Antigravity CLI) e HABBLAUD_PI_DIRS / HABBLAUD_PI=0 (Pi).": "Usage: npm run docker:up [-- options]\n\nOptions:\n  --no-build   starts without rebuilding the image\n  --down       stops the container (same as npm run docker:down)\n  -h, --help   shows this help\n\nVariables: HABBLAUD_PORT (host port, default {0}), HABBLAUD_CLAUDE_DIRS\n(comma-separated config dirs, if the accounts aren't in ~/.claude*), HABBLAUD_CODEX_DIRS\n(Codex folders, if they aren't in ~/.codex* or CODEX_HOME), HABBLAUD_CODEX=0 (without Codex),\nHABBLAUD_ANTIGRAVITY_DIRS / HABBLAUD_ANTIGRAVITY=0 (Antigravity CLI) and HABBLAUD_PI_DIRS / HABBLAUD_PI=0 (Pi).",
   "[docker-up] Atenção: {0}": "[docker-up] Warning: {0}",
   "uso atualizado": "usage up to date",
   "uso desatualizado": "usage outdated",
@@ -2076,6 +2076,9 @@ export const EN: Readonly<Record<string, string>> = {
   "{0} é uma pasta do Codex, não do Claude Code; conta ignorada.": "{0} is a Codex folder, not a Claude Code one; account skipped.",
   "Codex {0} ({1}): monta {2} de {3}, somente leitura.": "Codex {0} ({1}): mounts {2} from {3}, read-only.",
   "{0} ainda não tem thread-writer-locks/: no container, sessão aberta = conversa modificada nos últimos 30 min (rode o docker:up de novo depois de usar o Codex).": "{0} doesn't have thread-writer-locks/ yet: in the container, open session = conversation modified in the last 30 min (run docker:up again after using Codex).",
+  "Antigravity {0} ({1}): monta {2} de {3}, somente leitura.": "Antigravity {0} ({1}): mounts {2} from {3}, read-only.",
+  "Pi {0} ({1}): monta {2} de {3}, somente leitura.": "Pi {0} ({1}): mounts {2} from {3}, read-only.",
+  "{0} ainda não tem sessions/; conta do Pi ignorada.": "{0} doesn't have sessions/ yet; Pi account skipped.",
   "Uso ao vivo (mod ou tap de statusline): monta {0} em {1}, somente leitura.": "Live usage (mod or statusline tap): mounts {0} at {1}, read-only.",
   "docker-compose.override.yml gerado.": "docker-compose.override.yml generated.",
   "Aguardando o Habblaud responder em {0}…": "Waiting for Habblaud to respond at {0}…",

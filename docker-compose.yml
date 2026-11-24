@@ -7,7 +7,11 @@
 #     (uso de 5h/semanal capturado pelo tap de statusline) em /usage;
 #   - do Codex, SOMENTE <pasta>/sessions, <pasta>/archived_sessions e <pasta>/thread-writer-locks em
 #     /codex/<conta>/... (nunca auth.json, config.toml, history.jsonl, logs nem os bancos SQLite);
-#   - HABBLAUD_CLAUDE_DIRS, HABBLAUD_CODEX_DIRS, HABBLAUD_ACCOUNTS e HABBLAUD_USAGE_DIR.
+#   - do Antigravity CLI, SOMENTE <pasta>/brain, conversations, annotations, jetbox_summaries_proto.pb e
+#     history.jsonl em /antigravity/<conta>/... (nunca antigravity-oauth-token, settings.json nem SQLite);
+#   - do Pi, SOMENTE <pasta>/sessions em /pi/<conta>/... (nunca auth.json, settings.json nem models.json);
+#   - HABBLAUD_CLAUDE_DIRS, HABBLAUD_CODEX_DIRS, HABBLAUD_ANTIGRAVITY_DIRS, HABBLAUD_PI_DIRS, HABBLAUD_ACCOUNTS e
+#     HABBLAUD_USAGE_DIR.
 # O Compose mescla o override automaticamente em qualquer `docker compose ...` rodado nesta pasta.
 name: habblaud
 
@@ -39,6 +43,11 @@ services:
       HABBLAUD_LANG: ${HABBLAUD_LANG:-}
       # 0 desliga as sessões do Codex no escritório.
       HABBLAUD_CODEX: ${HABBLAUD_CODEX:-}
+      # 0 desliga as sessões do Antigravity CLI no escritório.
+      HABBLAUD_ANTIGRAVITY: ${HABBLAUD_ANTIGRAVITY:-}
+      HABBLAUD_AGY: ${HABBLAUD_AGY:-}
+      # 0 desliga as sessões do Pi no escritório.
+      HABBLAUD_PI: ${HABBLAUD_PI:-}
       # 1 liga o Novo agente pelo escritório (no Docker, quem começa a sessão é o auxiliar do host, npm run
       # codex:bridge; o terminal interativo em si não roda no container).
       HABBLAUD_PTY: ${HABBLAUD_PTY:-}

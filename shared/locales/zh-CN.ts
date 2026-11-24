@@ -2034,7 +2034,7 @@ export const ZH_CN: Readonly<Record<string, string>> = {
   "[codex] Erro inesperado: {0}": "[codex] 意外错误：{0}",
 
   // scripts/docker-up.ts
-  "Uso: npm run docker:up [-- opções]\n\nOpções:\n  --no-build   sobe sem reconstruir a imagem\n  --down       derruba o container (o mesmo que npm run docker:down)\n  -h, --help   mostra esta ajuda\n\nVariáveis: HABBLAUD_PORT (porta no host, padrão {0}), HABBLAUD_CLAUDE_DIRS\n(config dirs separados por vírgula, se as contas não estiverem em ~/.claude*), HABBLAUD_CODEX_DIRS\n(pastas do Codex, se não estiverem em ~/.codex* nem em CODEX_HOME) e HABBLAUD_CODEX=0 (sem o Codex).": "用法：npm run docker:up [-- 选项]\n\n选项：\n  --no-build   不重新构建镜像直接启动\n  --down       停止容器（等同于 npm run docker:down）\n  -h, --help   显示此帮助信息\n\n环境变量：HABBLAUD_PORT（宿主机端口，默认 {0}）、HABBLAUD_CLAUDE_DIRS\n（逗号分隔的配置目录列表，若账号不在 ~/.claude* 中）、HABBLAUD_CODEX_DIRS\n（Codex 文件夹列表，若不在 ~/.codex* 或 CODEX_HOME 中）以及 HABBLAUD_CODEX=0（禁用 Codex）。",
+  "Uso: npm run docker:up [-- opções]\n\nOpções:\n  --no-build   sobe sem reconstruir a imagem\n  --down       derruba o container (o mesmo que npm run docker:down)\n  -h, --help   mostra esta ajuda\n\nVariáveis: HABBLAUD_PORT (porta no host, padrão {0}), HABBLAUD_CLAUDE_DIRS\n(config dirs separados por vírgula, se as contas não estiverem em ~/.claude*), HABBLAUD_CODEX_DIRS\n(pastas do Codex, se não estiverem em ~/.codex* nem em CODEX_HOME), HABBLAUD_CODEX=0 (sem o Codex),\nHABBLAUD_ANTIGRAVITY_DIRS / HABBLAUD_ANTIGRAVITY=0 (Antigravity CLI) e HABBLAUD_PI_DIRS / HABBLAUD_PI=0 (Pi).": "用法：npm run docker:up [-- 选项]\n\n选项：\n  --no-build   不重新构建镜像直接启动\n  --down       停止容器（等同于 npm run docker:down）\n  -h, --help   显示此帮助信息\n\n环境变量：HABBLAUD_PORT（宿主机端口，默认 {0}）、HABBLAUD_CLAUDE_DIRS\n（逗号分隔的配置目录列表，若账号不在 ~/.claude* 中）、HABBLAUD_CODEX_DIRS\n（Codex 文件夹列表，若不在 ~/.codex* 或 CODEX_HOME 中）、HABBLAUD_CODEX=0（禁用 Codex）、\nHABBLAUD_ANTIGRAVITY_DIRS / HABBLAUD_ANTIGRAVITY=0（Antigravity CLI）以及 HABBLAUD_PI_DIRS / HABBLAUD_PI=0（Pi）。",
   "[docker-up] Atenção: {0}": "[docker-up] 注意：{0}",
   "uso atualizado": "用量已更新",
   "uso desatualizado": "用量已过期",
@@ -2076,6 +2076,9 @@ export const ZH_CN: Readonly<Record<string, string>> = {
   "{0} é uma pasta do Codex, não do Claude Code; conta ignorada.": "{0} 是 Codex 文件夹，不是 Claude Code 文件夹；已忽略该账号。",
   "Codex {0} ({1}): monta {2} de {3}, somente leitura.": "Codex {0}（{1}）：以只读方式将 {3} 的 {2} 挂载进来。",
   "{0} ainda não tem thread-writer-locks/: no container, sessão aberta = conversa modificada nos últimos 30 min (rode o docker:up de novo depois de usar o Codex).": "{0} 尚无 thread-writer-locks/：在容器中，打开的会话 = 最近 30 分钟内修改过的对话（使用 Codex 后请重新运行 docker:up）。",
+  "Antigravity {0} ({1}): monta {2} de {3}, somente leitura.": "Antigravity {0}（{1}）：以只读方式将 {3} 的 {2} 挂载进来。",
+  "Pi {0} ({1}): monta {2} de {3}, somente leitura.": "Pi {0}（{1}）：以只读方式将 {3} 的 {2} 挂载进来。",
+  "{0} ainda não tem sessions/; conta do Pi ignorada.": "{0} 尚无 sessions/；已忽略该 Pi 账号。",
   "Uso ao vivo (mod ou tap de statusline): monta {0} em {1}, somente leitura.": "实时用量（mod 或 statusline tap）：以只读方式将 {0} 挂载到 {1}。",
   "docker-compose.override.yml gerado.": "已生成 docker-compose.override.yml。",
   "Aguardando o Habblaud responder em {0}…": "正在等待 {0} 上的 Habblaud 响应…",

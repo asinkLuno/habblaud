@@ -24,6 +24,14 @@ do meio (0.**3**.0).
   histórico) e inclui uma extensão opcional (`mod/habblaud-pi/habblaud.ts`, instalável com `npm run pi:install`) para
   presença e eventos em tempo real (`POST /api/pi/events`) além do envio de mensagens pelo escritório.
 
+### Corrigido
+
+- **Docker (`npm run docker:up`): detecção e montagem das contas do Antigravity CLI e do Pi.** O `scripts/docker-up.ts`
+  agora descobre automaticamente as pastas do Antigravity CLI (`~/.gemini/antigravity-cli*`, `ANTIGRAVITY_CLI_HOME` ou
+  `HABBLAUD_ANTIGRAVITY_DIRS`) e do Pi (`~/.pi/agent`, `PI_CODING_AGENT_DIR` ou `HABBLAUD_PI_DIRS`), monta somente as
+  subpastas/arquivos de sessão em modo somente leitura em `/antigravity/<conta>` e `/pi/<conta>` e repassa
+  `HABBLAUD_ANTIGRAVITY_DIRS`, `HABBLAUD_PI_DIRS` e os metadados em `HABBLAUD_ACCOUNTS`.
+
 ## [1.0.3] - 2026-10-16
 
 ### Corrigido

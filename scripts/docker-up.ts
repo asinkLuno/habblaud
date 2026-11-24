@@ -16,6 +16,12 @@
 //    sessions/, archived_sessions/ e thread-writer-locks/ de cada uma, somente leitura, em /codex/<conta>/... —
 //    nunca auth.json, config.toml, shell_snapshots/, history.jsonl, logs nem os SQLite. Vão em HABBLAUD_CODEX_DIRS
 //    e, com `provider: 'codex'` e a pasta do HOST (onde o `codex queue` roda), em HABBLAUD_ACCOUNTS.
+//    Contas do Antigravity CLI (~/.gemini/antigravity-cli*, ANTIGRAVITY_CLI_HOME ou HABBLAUD_ANTIGRAVITY_DIRS;
+//    HABBLAUD_ANTIGRAVITY=0 / HABBLAUD_AGY=0 desliga): SOMENTE brain/, conversations/, annotations/,
+//    jetbox_summaries_proto.pb e history.jsonl, somente leitura, em /antigravity/<conta>/... — nunca
+//    antigravity-oauth-token, settings.json, daemon/ nem conversation_summaries.db.
+//    Contas do Pi (~/.pi/agent, PI_CODING_AGENT_DIR ou HABBLAUD_PI_DIRS; HABBLAUD_PI=0 desliga): SOMENTE sessions/,
+//    somente leitura, em /pi/<conta>/... — nunca auth.json, settings.json, models.json nem extensions/.
 // 3. Migra o que sobrou do nome antigo (CodeTown, até a 0.3.2): ~/.codetown vira ~/.habblaud, o container
 //    `codetown` e a rede codetown_default saem e, se o volume novo ainda não existe, os dados de
 //    codetown_codetown-data são copiados para ele (o antigo fica, para apagar à mão). Avisa de CODETOWN_*
@@ -37,9 +43,11 @@ import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync,
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { AccountInfo, SourceInfo } from '../shared/types';
+import type { AccountInfo, Provider, SourceInfo } from '../shared/types';
 import { codexDirsRefused, detectAccounts, discoverClaudeDirs, type DetectedAccount } from '../server/accounts/detect';
+import { detectAntigravityAccounts, discoverAntigravityDirs } from '../server/sources/antigravity/accounts';
 import { detectCodexAccounts, discoverCodexDirs } from '../server/sources/codex/accounts';
+import { detectPiAccounts, discoverPiDirs } from '../server/sources/pi/accounts';
 import { describeStateMigration, LEGACY_NAME, legacyEnvWarning, migrateLegacyStateDir } from '../server/legacy';
 import { makeClaudeRunner, MIN_CLAUDE_VERSION, readPackageVersion, updateInstalledMods, type ModUpdateResult } from './mod-install';
 import { tr } from '../shared/i18n';
@@ -71,6 +79,21 @@ const CODEX_CONTAINER_ROOT = '/codex';
  * auth.json, config.toml, shell_snapshots/, history.jsonl, logs e os SQLite ficam no host.
  */
 export const CODEX_MOUNTED_SUBDIRS = ['sessions', 'archived_sessions', 'thread-writer-locks'] as const;
+/** Raiz das montagens do Antigravity CLI dentro do container: /antigravity/<conta>/{brain,conversations,annotations,...}. */
+const ANTIGRAVITY_CONTAINER_ROOT = '/antigravity';
+/**
+ * Somente estas subpastas e arquivos de cada pasta do Antigravity CLI entram no container.
+ * antigravity-oauth-token, settings.json, daemon/ e conversation_summaries.db ficam no host.
+ */
+export const ANTIGRAVITY_MOUNTED_SUBDIRS = ['brain', 'conversations', 'annotations'] as const;
+export const ANTIGRAVITY_MOUNTED_FILES = ['jetbox_summaries_proto.pb', 'history.jsonl'] as const;
+/** Raiz das montagens do Pi dentro do container: /pi/<conta>/sessions. */
+const PI_CONTAINER_ROOT = '/pi';
+/**
+ * Somente sessions/ de cada pasta do Pi entra no container.
+ * auth.json, settings.json, models.json, models-store.json e extensions/ ficam no host.
+ */
+export const PI_MOUNTED_SUBDIRS = ['sessions'] as const;
 const DEFAULT_PORT = 4747;
 const HEALTH_TIMEOUT_MS = 120_000;
 /** Imagem e volume de dados como o Compose os nomeia (`name: habblaud` no docker-compose.yml). */
@@ -84,7 +107,7 @@ const LEGACY_DOCKER = {
   image: `${LEGACY_NAME}:local`,
 } as const;
 
-const USAGE = tr('Uso: npm run docker:up [-- opções]\n\nOpções:\n  --no-build   sobe sem reconstruir a imagem\n  --down       derruba o container (o mesmo que npm run docker:down)\n  -h, --help   mostra esta ajuda\n\nVariáveis: HABBLAUD_PORT (porta no host, padrão {0}), HABBLAUD_CLAUDE_DIRS\n(config dirs separados por vírgula, se as contas não estiverem em ~/.claude*), HABBLAUD_CODEX_DIRS\n(pastas do Codex, se não estiverem em ~/.codex* nem em CODEX_HOME) e HABBLAUD_CODEX=0 (sem o Codex).', [DEFAULT_PORT]);
+const USAGE = tr('Uso: npm run docker:up [-- opções]\n\nOpções:\n  --no-build   sobe sem reconstruir a imagem\n  --down       derruba o container (o mesmo que npm run docker:down)\n  -h, --help   mostra esta ajuda\n\nVariáveis: HABBLAUD_PORT (porta no host, padrão {0}), HABBLAUD_CLAUDE_DIRS\n(config dirs separados por vírgula, se as contas não estiverem em ~/.claude*), HABBLAUD_CODEX_DIRS\n(pastas do Codex, se não estiverem em ~/.codex* nem em CODEX_HOME), HABBLAUD_CODEX=0 (sem o Codex),\nHABBLAUD_ANTIGRAVITY_DIRS / HABBLAUD_ANTIGRAVITY=0 (Antigravity CLI) e HABBLAUD_PI_DIRS / HABBLAUD_PI=0 (Pi).', [DEFAULT_PORT]);
 
 // ---------------------------------------------------------------------------------------------
 // Saída no terminal
@@ -166,8 +189,8 @@ type CachedUsage = { fetchedAtMs: unknown; utilization: Partial<Record<(typeof U
 
 export interface AccountPayload {
   id: string;
-  /** Só nas contas do Codex (ausente = Claude Code). */
-  provider?: 'codex';
+  /** Ferramenta da conta (ausente = Claude Code). */
+  provider?: Exclude<Provider, 'claude'>;
   configDir: string;
   mountDir: string;
   short: string;
@@ -184,6 +207,16 @@ function realDir(p: string): string | undefined {
   try {
     const real = realpathSync(p);
     return statSync(real).isDirectory() ? real : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Caminho real de um arquivo existente, ou undefined. */
+function realFile(p: string): string | undefined {
+  try {
+    const real = realpathSync(p);
+    return statSync(real).isFile() ? real : undefined;
   } catch {
     return undefined;
   }
@@ -241,6 +274,84 @@ export function codexAccountsPayload(mounts: AccountMount[]): AccountPayload[] {
 /** HABBLAUD_CODEX desligado (0, false, off, no) no ambiente de quem roda o docker:up. */
 export function codexDisabled(env: NodeJS.ProcessEnv): boolean {
   const v = env.HABBLAUD_CODEX?.trim();
+  return !!v && !/^(1|true|yes|sim|on)$/i.test(v);
+}
+
+/**
+ * Monta só brain/, conversations/, annotations/ e os arquivos jetbox_summaries_proto.pb e history.jsonl de cada pasta
+ * do Antigravity CLI (os que existirem), em /antigravity/<id>.
+ */
+export function planAntigravityMounts(
+  dirs: string[],
+  accounts: DetectedAccount[],
+  resolveDir: (p: string) => string | undefined = realDir,
+  resolveFile: (p: string) => string | undefined = realFile,
+): AccountMount[] {
+  const out: AccountMount[] = [];
+  dirs.forEach((hostDir, i) => {
+    const account = accounts[i];
+    const mountDir = posix.join(ANTIGRAVITY_CONTAINER_ROOT, account.id);
+    const binds: BindMount[] = [];
+    for (const sub of ANTIGRAVITY_MOUNTED_SUBDIRS) {
+      const source = resolveDir(join(hostDir, sub));
+      if (source) binds.push({ source, target: posix.join(mountDir, sub) });
+    }
+    for (const file of ANTIGRAVITY_MOUNTED_FILES) {
+      const source = resolveFile(join(hostDir, file));
+      if (source) binds.push({ source, target: posix.join(mountDir, file) });
+    }
+    if (binds.length) out.push({ account, hostDir, mountDir, binds });
+  });
+  return out;
+}
+
+/** Metadados das contas do Antigravity CLI para HABBLAUD_ACCOUNTS (`provider: 'antigravity'` e pasta do HOST). */
+export function antigravityAccountsPayload(mounts: AccountMount[]): AccountPayload[] {
+  return mounts.map(({ account: a, hostDir, mountDir }) => {
+    const p: AccountPayload = { id: a.id, provider: 'antigravity', configDir: hostDir, mountDir, short: a.short, name: a.name, color: a.color };
+    if (a.plan) p.plan = a.plan;
+    return p;
+  });
+}
+
+/** HABBLAUD_ANTIGRAVITY (ou HABBLAUD_AGY) desligado (0, false, off, no) no ambiente de quem roda o docker:up. */
+export function antigravityDisabled(env: NodeJS.ProcessEnv): boolean {
+  const v = (env.HABBLAUD_ANTIGRAVITY ?? env.HABBLAUD_AGY)?.trim();
+  return !!v && !/^(1|true|yes|sim|on)$/i.test(v);
+}
+
+/** Monta só sessions/ de cada pasta do Pi (a que existir), em /pi/<id>. */
+export function planPiMounts(dirs: string[], accounts: DetectedAccount[], resolveDir: (p: string) => string | undefined = realDir): AccountMount[] {
+  const out: AccountMount[] = [];
+  dirs.forEach((hostDir, i) => {
+    const account = accounts[i];
+    const mountDir = posix.join(PI_CONTAINER_ROOT, account.id);
+    const binds: BindMount[] = [];
+    for (const sub of PI_MOUNTED_SUBDIRS) {
+      const source = resolveDir(join(hostDir, sub));
+      if (source) binds.push({ source, target: posix.join(mountDir, sub) });
+    }
+    if (binds.length) out.push({ account, hostDir, mountDir, binds });
+  });
+  return out;
+}
+
+/** Metadados das contas do Pi para HABBLAUD_ACCOUNTS (`provider: 'pi'` e pasta do HOST). */
+export function piAccountsPayload(mounts: AccountMount[]): AccountPayload[] {
+  return mounts.map(({ account: a, hostDir, mountDir }) => ({
+    id: a.id,
+    provider: 'pi',
+    configDir: hostDir,
+    mountDir,
+    short: a.short,
+    name: a.name,
+    color: a.color,
+  }));
+}
+
+/** HABBLAUD_PI desligado (0, false, off, no) no ambiente de quem roda o docker:up. */
+export function piDisabled(env: NodeJS.ProcessEnv): boolean {
+  const v = env.HABBLAUD_PI?.trim();
   return !!v && !/^(1|true|yes|sim|on)$/i.test(v);
 }
 
@@ -316,12 +427,24 @@ export function renderOverride(
   codex: AccountMount[] = [],
   remoteTlsDir?: string,
   extraPorts: string[] = [],
+  antigravity: AccountMount[] = [],
+  pi: AccountMount[] = [],
 ): string {
   const env: Array<[string, string]> = [
     ['HABBLAUD_CLAUDE_DIRS', mounts.map((m) => m.mountDir).join(',')],
-    ['HABBLAUD_ACCOUNTS', JSON.stringify([...accountsPayload(mounts), ...codexAccountsPayload(codex)])],
+    [
+      'HABBLAUD_ACCOUNTS',
+      JSON.stringify([
+        ...accountsPayload(mounts),
+        ...codexAccountsPayload(codex),
+        ...antigravityAccountsPayload(antigravity),
+        ...piAccountsPayload(pi),
+      ]),
+    ],
   ];
   if (codex.length) env.push(['HABBLAUD_CODEX_DIRS', codex.map((m) => m.mountDir).join(',')]);
+  if (antigravity.length) env.push(['HABBLAUD_ANTIGRAVITY_DIRS', antigravity.map((m) => m.mountDir).join(',')]);
+  if (pi.length) env.push(['HABBLAUD_PI_DIRS', pi.map((m) => m.mountDir).join(',')]);
   if (usageDir) env.push(['HABBLAUD_USAGE_DIR', CONTAINER_USAGE_DIR]);
   if (timeZone) env.push(['TZ', timeZone]);
   const lines = [
@@ -329,6 +452,10 @@ export function renderOverride(
     '# Contém caminhos do host e e-mails das contas: fica fora do git e com permissão 600.',
     '# Montagens: SOMENTE <conta>/projects, <conta>/sessions e a pasta do uso do statusline, todas somente leitura.',
     ...(codex.length ? ['# Codex: SOMENTE <pasta>/sessions, <pasta>/archived_sessions e <pasta>/thread-writer-locks, somente leitura.'] : []),
+    ...(antigravity.length
+      ? ['# Antigravity: SOMENTE <pasta>/brain, conversations, annotations, jetbox_summaries_proto.pb e history.jsonl, somente leitura.']
+      : []),
+    ...(pi.length ? ['# Pi: SOMENTE <pasta>/sessions, somente leitura.'] : []),
     'services:',
     `  ${SERVICE}:`,
     '    environment:',
@@ -336,7 +463,7 @@ export function renderOverride(
   ];
   // O Compose junta estas portas às do docker-compose.yml.
   if (extraPorts.length) lines.push('    ports:', ...extraPorts.map((p) => `      - ${yamlString(p)}`));
-  const binds = [...mounts, ...codex].flatMap((m) => m.binds);
+  const binds = [...mounts, ...codex, ...antigravity, ...pi].flatMap((m) => m.binds);
   if (usageDir) binds.push({ source: usageDir, target: CONTAINER_USAGE_DIR });
   // Acesso remoto: SÓ a pasta do certificado do servidor (a chave da CA fica no host).
   if (remoteTlsDir) binds.push({ source: remoteTlsDir, target: CONTAINER_REMOTE_TLS_DIR });
@@ -674,13 +801,6 @@ async function up(opts: Options, port: number): Promise<void> {
   const dirs = discoverClaudeDirs(process.env, HOME);
   const accounts = detectAccounts(dirs, { home: HOME, env: process.env });
   const mounts = planMounts(dirs, accounts);
-  if (!mounts.length) {
-    warn(
-      tr('nenhuma pasta do Claude Code (com projects/ ou sessions/) foi encontrada em ~/.claude*.\n') +
-        tr('  O escritório vai abrir vazio (dá para ligar o modo demonstração na interface).\n') +
-        tr('  Se as contas estiverem em outro lugar: HABBLAUD_CLAUDE_DIRS=/caminho/conta1,/caminho/conta2 npm run docker:up'),
-    );
-  }
   for (const m of mounts) {
     const subdirs = m.binds.map((b) => posix.basename(b.target)).join(' e ');
     say(tr('Conta {0} ({1}): monta {2} de {3}, somente leitura.', [m.account.short, m.account.id, subdirs, tildify(m.hostDir)]));
@@ -693,10 +813,12 @@ async function up(opts: Options, port: number): Promise<void> {
   const claudeRefused = codexDirsRefused(process.env, HOME);
   const codexDirs = codexDisabled(process.env) ? [] : discoverCodexDirs(process.env, HOME);
   for (const dir of claudeRefused) if (!codexDirs.includes(dir)) warn(tr('{0} é uma pasta do Codex, não do Claude Code; conta ignorada.', [tildify(dir)]));
+  const takenShorts = accounts.map((a) => a.short);
+  const takenColors = accounts.map((a) => a.color);
   const codexAccounts = detectCodexAccounts(codexDirs, {
     home: HOME,
     env: process.env,
-    taken: { shorts: accounts.map((a) => a.short), colors: accounts.map((a) => a.color) },
+    taken: { shorts: takenShorts, colors: takenColors },
   });
   const codexMounts = planCodexMounts(codexDirs, codexAccounts);
   for (const m of codexMounts) {
@@ -706,6 +828,45 @@ async function up(opts: Options, port: number): Promise<void> {
       warn(tr('{0} ainda não tem thread-writer-locks/: no container, sessão aberta = conversa modificada nos últimos 30 min (rode o docker:up de novo depois de usar o Codex).', [tildify(m.hostDir)]));
     }
   }
+  takenShorts.push(...codexAccounts.map((a) => a.short));
+  takenColors.push(...codexAccounts.map((a) => a.color));
+
+  const antigravityDirs = antigravityDisabled(process.env) ? [] : discoverAntigravityDirs(process.env, HOME);
+  const antigravityAccounts = detectAntigravityAccounts(antigravityDirs, {
+    home: HOME,
+    env: process.env,
+    taken: { shorts: takenShorts, colors: takenColors },
+  });
+  const antigravityMounts = planAntigravityMounts(antigravityDirs, antigravityAccounts);
+  for (const m of antigravityMounts) {
+    const entries = m.binds.map((b) => posix.basename(b.target)).join(', ');
+    say(tr('Antigravity {0} ({1}): monta {2} de {3}, somente leitura.', [m.account.short, m.account.id, entries, tildify(m.hostDir)]));
+  }
+  takenShorts.push(...antigravityAccounts.map((a) => a.short));
+  takenColors.push(...antigravityAccounts.map((a) => a.color));
+
+  const piDirs = piDisabled(process.env) ? [] : discoverPiDirs(process.env, HOME);
+  const piAccounts = detectPiAccounts(piDirs, {
+    home: HOME,
+    env: process.env,
+    taken: { shorts: takenShorts, colors: takenColors },
+  });
+  const piMounts = planPiMounts(piDirs, piAccounts);
+  for (const m of piMounts) {
+    const subdirs = m.binds.map((b) => posix.basename(b.target)).join(', ');
+    say(tr('Pi {0} ({1}): monta {2} de {3}, somente leitura.', [m.account.short, m.account.id, subdirs, tildify(m.hostDir)]));
+  }
+  for (const dir of piDirs) {
+    if (!piMounts.some((m) => m.hostDir === dir)) warn(tr('{0} ainda não tem sessions/; conta do Pi ignorada.', [tildify(dir)]));
+  }
+
+  if (!mounts.length && !codexMounts.length && !antigravityMounts.length && !piMounts.length) {
+    warn(
+      tr('nenhuma pasta do Claude Code (com projects/ ou sessions/) foi encontrada em ~/.claude*.\n') +
+        tr('  O escritório vai abrir vazio (dá para ligar o modo demonstração na interface).\n') +
+        tr('  Se as contas estiverem em outro lugar: HABBLAUD_CLAUDE_DIRS=/caminho/conta1,/caminho/conta2 npm run docker:up'),
+    );
+  }
 
   migrateStateDir();
   const usageDir = ensureUsageDir();
@@ -713,7 +874,11 @@ async function up(opts: Options, port: number): Promise<void> {
   const remoteTlsDir = prepareRemoteTls();
   const remotePorts = remoteTlsDir || remoteInsecure() ? remotePortsToPublish() : [];
   const tmp = `${OVERRIDE_FILE}.tmp`;
-  writeFileSync(tmp, renderOverride(mounts, new Date(), usageDir, hostTimeZone(), codexMounts, remoteTlsDir, remotePorts), { mode: 0o600 });
+  writeFileSync(
+    tmp,
+    renderOverride(mounts, new Date(), usageDir, hostTimeZone(), codexMounts, remoteTlsDir, remotePorts, antigravityMounts, piMounts),
+    { mode: 0o600 },
+  );
   chmodSync(tmp, 0o600);
   renameSync(tmp, OVERRIDE_FILE);
   say(tr('docker-compose.override.yml gerado.'));
@@ -740,6 +905,19 @@ async function up(opts: Options, port: number): Promise<void> {
     const usage = health.accounts?.find((a) => a.id === m.account.id)?.usageStatus;
     const state = src.ok ? plural(src.sessions, tr('sessão aberta'), tr('sessões abertas')) : tr('erro ao ler ({0})', [src.error ?? tr('desconhecido')]);
     say(`  Codex ${m.account.short} (${m.account.id}): ${state}${usage ? ` · ${USAGE_STATUS[usage]}` : ''}`);
+  }
+  for (const m of antigravityMounts) {
+    const src = health.sources?.find((s) => s.label === m.account.id && s.provider === 'antigravity');
+    if (!src) continue;
+    const usage = health.accounts?.find((a) => a.id === m.account.id)?.usageStatus;
+    const state = src.ok ? plural(src.sessions, tr('sessão aberta'), tr('sessões abertas')) : tr('erro ao ler ({0})', [src.error ?? tr('desconhecido')]);
+    say(`  Antigravity ${m.account.short} (${m.account.id}): ${state}${usage ? ` · ${USAGE_STATUS[usage]}` : ''}`);
+  }
+  for (const m of piMounts) {
+    const src = health.sources?.find((s) => s.label === m.account.id && s.provider === 'pi');
+    if (!src) continue;
+    const state = src.ok ? plural(src.sessions, tr('sessão aberta'), tr('sessões abertas')) : tr('erro ao ler ({0})', [src.error ?? tr('desconhecido')]);
+    say(`  Pi ${m.account.short} (${m.account.id}): ${state}`);
   }
   for (const line of modHint(updateMods(dirs, accounts))) say(line);
   // Com a cópia falha, os dados só existem no volume antigo: nada de sugerir apagá-lo.

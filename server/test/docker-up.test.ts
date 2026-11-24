@@ -4,6 +4,10 @@ import type { DetectedAccount } from '../accounts/detect';
 import { legacyEnvWarning } from '../legacy';
 import {
   accountsPayload,
+  ANTIGRAVITY_MOUNTED_FILES,
+  ANTIGRAVITY_MOUNTED_SUBDIRS,
+  antigravityAccountsPayload,
+  antigravityDisabled,
   CODEX_MOUNTED_SUBDIRS,
   codexAccountsPayload,
   codexDisabled,
@@ -12,8 +16,13 @@ import {
   envFileKeys,
   hostTimeZone,
   parseArgs,
+  PI_MOUNTED_SUBDIRS,
+  piAccountsPayload,
+  piDisabled,
+  planAntigravityMounts,
   planCodexMounts,
   planMounts,
+  planPiMounts,
   planUp,
   renderOverride,
   sanitizeCachedUsage,
@@ -130,6 +139,74 @@ describe('docker-up', () => {
     expect(codexDisabled({ HABBLAUD_CODEX: 'off' })).toBe(true);
     expect(codexDisabled({ HABBLAUD_CODEX: '1' })).toBe(false);
     expect(codexDisabled({})).toBe(false);
+  });
+
+  it('Antigravity e Pi: montam SÓ os arquivos/subpastas seguros (somente leitura) e passam as contas com a pasta do host', () => {
+    expect([...ANTIGRAVITY_MOUNTED_SUBDIRS]).toEqual(['brain', 'conversations', 'annotations']);
+    expect([...ANTIGRAVITY_MOUNTED_FILES]).toEqual(['jetbox_summaries_proto.pb', 'history.jsonl']);
+    expect([...PI_MOUNTED_SUBDIRS]).toEqual(['sessions']);
+
+    const agyHost = '/Users/fulano/.gemini/antigravity-cli';
+    const agyDirs = new Set([`${agyHost}/brain`, `${agyHost}/conversations`, `${agyHost}/daemon`]);
+    const agyFiles = new Set([`${agyHost}/jetbox_summaries_proto.pb`, `${agyHost}/antigravity-oauth-token`, `${agyHost}/settings.json`, `${agyHost}/conversation_summaries.db`]);
+    const agyAcc: DetectedAccount = { id: 'antigravity-cli', provider: 'antigravity', configDir: agyHost, short: 'G', name: 'Antigravity', color: '#4aa8e8' };
+    const antigravity = planAntigravityMounts(
+      [agyHost, '/Users/fulano/.gemini/antigravity-cli-vazia'],
+      [agyAcc, { ...agyAcc, id: 'antigravity-cli-vazia' }],
+      (p) => (agyDirs.has(slash(p)) ? `/real${slash(p)}` : undefined),
+      (p) => (agyFiles.has(slash(p)) ? `/real${slash(p)}` : undefined),
+    );
+    expect(antigravity.map((m) => m.binds)).toEqual([
+      [
+        { source: `/real${agyHost}/brain`, target: '/antigravity/antigravity-cli/brain' },
+        { source: `/real${agyHost}/conversations`, target: '/antigravity/antigravity-cli/conversations' },
+        { source: `/real${agyHost}/jetbox_summaries_proto.pb`, target: '/antigravity/antigravity-cli/jetbox_summaries_proto.pb' },
+      ],
+    ]);
+    expect(antigravityAccountsPayload(antigravity)).toEqual([
+      { id: 'antigravity-cli', provider: 'antigravity', configDir: agyHost, mountDir: '/antigravity/antigravity-cli', short: 'G', name: 'Antigravity', color: '#4aa8e8' },
+    ]);
+
+    const piHost = '/Users/fulano/.pi/agent';
+    const piDirs = new Set([`${piHost}/sessions`, `${piHost}/extensions`]);
+    const piAcc: DetectedAccount = { id: '.pi', provider: 'pi', configDir: piHost, short: 'P', name: 'Pi', color: '#a77bf3' };
+    const pi = planPiMounts(
+      [piHost, '/Users/fulano/.pi-vazia/agent'],
+      [piAcc, { ...piAcc, id: '.pi-vazia' }],
+      (p) => (piDirs.has(slash(p)) ? `/real${slash(p)}` : undefined),
+    );
+    expect(pi.map((m) => m.binds)).toEqual([[{ source: `/real${piHost}/sessions`, target: '/pi/.pi/sessions' }]]);
+    expect(piAccountsPayload(pi)).toEqual([
+      { id: '.pi', provider: 'pi', configDir: piHost, mountDir: '/pi/.pi', short: 'P', name: 'Pi', color: '#a77bf3' },
+    ]);
+
+    const yml = renderOverride([], new Date(0), undefined, undefined, [], undefined, [], antigravity, pi);
+    expect(yml).toContain('HABBLAUD_ANTIGRAVITY_DIRS: "/antigravity/antigravity-cli"');
+    expect(yml).toContain('HABBLAUD_PI_DIRS: "/pi/.pi"');
+    expect(yml).toContain(`source: "/real${agyHost}/brain"\n        target: "/antigravity/antigravity-cli/brain"\n        read_only: true`);
+    expect(yml).toContain(`source: "/real${piHost}/sessions"\n        target: "/pi/.pi/sessions"\n        read_only: true`);
+    expect(yml.match(/read_only: true/g)).toHaveLength(4);
+    for (const secret of ['antigravity-oauth-token', 'conversation_summaries.db', 'settings.json', 'daemon', 'auth.json', 'extensions']) {
+      expect(yml).not.toContain(secret);
+    }
+    const accounts = JSON.parse(JSON.parse(/HABBLAUD_ACCOUNTS: (".*")/.exec(yml)![1]) as string) as Array<Record<string, unknown>>;
+    expect(accounts.map((a) => [a.id, a.provider, a.configDir, a.mountDir])).toEqual([
+      ['antigravity-cli', 'antigravity', agyHost, '/antigravity/antigravity-cli'],
+      ['.pi', 'pi', piHost, '/pi/.pi'],
+    ]);
+    // Sem Antigravity/Pi: nada de HABBLAUD_ANTIGRAVITY_DIRS nem HABBLAUD_PI_DIRS.
+    const empty = renderOverride([]);
+    expect(empty).not.toContain('HABBLAUD_ANTIGRAVITY_DIRS');
+    expect(empty).not.toContain('HABBLAUD_PI_DIRS');
+
+    expect(antigravityDisabled({ HABBLAUD_ANTIGRAVITY: '0' })).toBe(true);
+    expect(antigravityDisabled({ HABBLAUD_AGY: 'off' })).toBe(true);
+    expect(antigravityDisabled({ HABBLAUD_ANTIGRAVITY: '1', HABBLAUD_AGY: '0' })).toBe(false);
+    expect(antigravityDisabled({})).toBe(false);
+    expect(piDisabled({ HABBLAUD_PI: '0' })).toBe(true);
+    expect(piDisabled({ HABBLAUD_PI: 'false' })).toBe(true);
+    expect(piDisabled({ HABBLAUD_PI: '1' })).toBe(false);
+    expect(piDisabled({})).toBe(false);
   });
 
   it('fuso do host vai para o container como TZ', () => {
