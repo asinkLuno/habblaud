@@ -43,6 +43,20 @@ describe('Meu dia com o Codex', () => {
     expect(accountCards([acc('.codex', { ms: ms({ working: H }) })])[0]).toMatchObject({ codex: false, cost: '—' });
   });
 
+  it('Antigravity (sem custo) e Pi (com custo) preservam provider e semântica de custo', () => {
+    const cards = accountCards(
+      [
+        acc('antigravity-cli', { ms: ms({ working: H }), counts: counts({ tokensIn: 500_000 }) }),
+        acc('.pi', { ms: ms({ working: H }), counts: counts({ tokensIn: 100_000, costUSD: 0.75 }) }),
+      ],
+      (id) => (id === 'antigravity-cli' ? 'antigravity' : 'pi'),
+    );
+    expect(cards.map((c) => [c.id, c.provider, c.cost])).toEqual([
+      ['antigravity-cli', 'antigravity', null],
+      ['.pi', 'pi', 'US$ 0,75'],
+    ]);
+  });
+
   it('dica do custo diz que o Codex não grava custo', () => {
     const day = (c: Partial<DayStats['totals']['counts']>) => ({ totals: { ...totals(), counts: counts(c), waitWallMs: 0 }, waits: [] }) as unknown as DayStats;
     expect(highlights(day({ tokensIn: 5, costUSD: 2 }), clock, true).costHint).toBe('Só do Claude Code: o Codex não grava custo, só tokens');

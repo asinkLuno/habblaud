@@ -8,6 +8,7 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import type { RecentSession } from '../../../shared/types';
 import { errMsg, log } from '../../log';
+import { mapLimit } from '../async';
 import { HISTORY_LIMIT, HISTORY_MAX_AGE_MS } from '../history';
 import type { HistoryProvider, HistoryResolveResult } from '../source';
 import { encodeCwd } from '../watcher';
@@ -248,18 +249,4 @@ export async function readRolloutSummary(path: string, size: number): Promise<Ro
   } finally {
     await fh.close();
   }
-}
-
-/** map() assíncrono com no máximo `limit` tarefas ao mesmo tempo (mantém a ordem). */
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
 }

@@ -43,7 +43,7 @@ import {
 } from './daystats-model';
 import { formatClock } from './format';
 import { ICONS } from './icons';
-import { accountProvider } from './provider';
+import { accountProvider, providerRecordsCost } from './provider';
 import { tr } from '../../../shared/i18n';
 
 const REFRESH_MS = 30_000;
@@ -330,7 +330,7 @@ export class DayPanel implements UiComponent {
   private sections(res: DayStatsResponse): HTMLElement[] {
     const stats = res.stats;
     const clock = (t: number) => formatClock(t, false);
-    const hl = highlights(stats, clock, stats.accounts.some((a) => this.isCodexAccount(a.id) && a.counts.tokensIn + a.counts.tokensOut > 0));
+    const hl = highlights(stats, clock, stats.accounts.some((a) => !providerRecordsCost(this.accountProvider(a.id)) && a.counts.tokensIn + a.counts.tokensOut > 0));
     const out: HTMLElement[] = [this.kpis(hl)];
     if (isEmptyDay(stats)) {
       const today = stats.day === res.today;
@@ -576,7 +576,8 @@ export class DayPanel implements UiComponent {
       const acc = accounts.get(w.account);
       const chip = h('span', { class: 'ui-acc-chip', text: acc?.short ?? '?', title: acc?.name ?? w.account });
       setStyleVar(chip, '--acc', acc?.color ?? '#8b98b3');
-      if (this.isCodexAccount(w.account)) chip.dataset.provider = 'codex';
+      const prov = this.accountProvider(w.account);
+      if (prov !== 'claude') chip.dataset.provider = prov;
       list.append(
         h(
           'li',
@@ -610,7 +611,7 @@ export class DayPanel implements UiComponent {
   // ---------------------------------------------------------------- por conta
 
   private accountsCard(res: DayStatsResponse): HTMLElement {
-    const cards = accountCards(res.stats.accounts, (id) => this.isCodexAccount(id));
+    const cards = accountCards(res.stats.accounts, (id) => this.accountProvider(id));
     const c = this.card('accounts', tr('Por conta'), tr('Cada conta na cor dela, com a fatia do tempo de trabalho do dia'));
     if (!cards.length) {
       c.body.append(h('p', { class: 'ui-day__muted', text: tr('Nenhuma conta com tempo neste dia.') }));
@@ -618,7 +619,11 @@ export class DayPanel implements UiComponent {
     }
     const grid = h('div', { class: 'ui-day__accounts' });
     for (const a of cards) {
-      const chip = h('span', { class: 'ui-acc-chip ui-acc-chip--md', text: a.short, attrs: { 'aria-hidden': 'true', ...(a.codex ? { 'data-provider': 'codex' } : {}) } });
+      const chip = h('span', {
+        class: 'ui-acc-chip ui-acc-chip--md',
+        text: a.short,
+        attrs: { 'aria-hidden': 'true', ...(a.provider !== 'claude' ? { 'data-provider': a.provider } : {}) },
+      });
       setStyleVar(chip, '--acc', a.color);
       const meter = h(
         'span',
@@ -638,7 +643,7 @@ export class DayPanel implements UiComponent {
           ...stat(tr('Trabalhando'), a.working),
           ...stat(tr('Esperando você'), a.waiting),
           ...stat('Tokens', a.tokens),
-          // Codex: não grava custo, só tokens.
+          // Ferramentas sem custo nos transcripts (Codex, Antigravity): mostra só tokens.
           ...(a.cost !== null ? stat(tr('Custo'), a.cost) : [h('dt', { text: tr('Custo') }), h('dd', { text: tr('só tokens'), title: tr('O Codex não grava custo, só tokens') })]),
         ),
       );
@@ -649,9 +654,9 @@ export class DayPanel implements UiComponent {
     return c.el;
   }
 
-  /** Conta do Codex: a do snapshot diz; uma conta que já saiu, o jeito do id (".codex"). */
-  private isCodexAccount(id: string): boolean {
-    return accountProvider(this.ctx.account(id), id) === 'codex';
+  /** Ferramenta da conta: a do snapshot diz; uma conta que já saiu, o jeito do id. */
+  private accountProvider(id: string) {
+    return accountProvider(this.ctx.account(id), id);
   }
 
   // ---------------------------------------------------------------- dica (hover e foco)

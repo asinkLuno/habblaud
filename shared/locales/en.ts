@@ -3367,4 +3367,11 @@ export const EN: Readonly<Record<string, string>> = {
   "· {0}: extensão não estava instalada.": "· {0}: extension was not installed.",
   "[dry-run] removeria {0}": "[dry-run] would remove {0}",
   "✓ Extensão removida de {0}": "✓ Extension removed from {0}",
+  "sem notícia da entrega: confira no Antigravity CLI": "no delivery confirmation: check in Antigravity CLI",
+  "ao Antigravity{0}": "to Antigravity{0}",
+  "o Antigravity CLI ainda não recebe mensagens pelo escritório": "Antigravity CLI does not receive messages from the office yet",
+  "Abra o Claude Code{0} ou o Antigravity em qualquer projeto e veja seu agente chegar.": "Open Claude Code{0} or Antigravity in any project and watch your agent arrive.",
+  "Abra o Claude Code{0}, o Codex ou o Antigravity em qualquer projeto e veja seu agente chegar.": "Open Claude Code{0}, Codex or Antigravity in any project and watch your agent arrive.",
+  "Abra o Claude Code{0}, o Antigravity ou o Pi em qualquer projeto e veja seu agente chegar.": "Open Claude Code{0}, Antigravity or Pi in any project and watch your agent arrive.",
+  "Abra o Claude Code{0}, o Codex, o Antigravity ou o Pi em qualquer projeto e veja seu agente chegar.": "Open Claude Code{0}, Codex, Antigravity or Pi in any project and watch your agent arrive.",
 };

@@ -17,7 +17,20 @@ export type AgentKind = 'main' | 'sub';
  * - antigravity: Google Antigravity CLI (`agy`, que grava em ~/.gemini/antigravity-cli);
  * - pi: Pi coding agent (`~/.pi/agent` / `PI_CODING_AGENT_DIR`).
  */
-export type Provider = 'claude' | 'codex' | 'antigravity' | 'pi';
+export const PROVIDERS = ['claude', 'codex', 'antigravity', 'pi'] as const;
+export type Provider = (typeof PROVIDERS)[number];
+
+export function isProvider(v: unknown): v is Provider {
+  return typeof v === 'string' && (PROVIDERS as readonly string[]).includes(v);
+}
+
+/** Selo curto por ferramenta (usado pelo canvas do escritório e pela UI sem acoplar world/ a ui/). */
+export const PROVIDER_BADGE: Record<Provider, string> = {
+  claude: '',
+  codex: 'CODEX',
+  antigravity: 'AGY',
+  pi: 'PI',
+};
 
 /**
  * Estado de alto nível de um agente — é o que dirige o comportamento do personagem.

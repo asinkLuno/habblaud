@@ -96,9 +96,9 @@ export function focusPermission(ctx: UiContext, agentId: string): void {
 /** A página foi aberta pelo próprio computador? (a regra antiga; quem decide agora é o servidor, ver net/access.ts) */
 export const isLocalHostname = isLoopbackHostname;
 
-/** Pedido que se responde escolhendo (as perguntas do AskUserQuestion), não aprovando. O Codex nunca pergunta. */
+/** Pedido que se responde escolhendo (as perguntas do AskUserQuestion), não aprovando. Só o Claude Code pergunta pelo escritório. */
 export function isQuestionRequest(p: Pick<PermissionRequestInfo, 'tool' | 'questions' | 'provider'> | undefined): boolean {
-  return !!p && p.provider !== 'codex' && p.tool === ASK_TOOL && !!p.questions?.length;
+  return !!p && (p.provider ?? 'claude') === 'claude' && p.tool === ASK_TOOL && !!p.questions?.length;
 }
 
 /** O que está marcado numa pergunta do cartão: as opções (posições do original) e o "Outro" (marcado, e o texto). */

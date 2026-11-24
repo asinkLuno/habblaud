@@ -118,10 +118,11 @@ export function detectCodexAccounts(dirs: string[], opts: CodexDetectOptions = {
 
   const partial = dirs.map((dir, i) => {
     const ov = matchOverride(overrides, ids[i], resolve(dir), home);
-    const short = str(ov?.short)?.slice(0, 3) ?? shortcuts.get(resolve(dir));
-    return { dir, id: str(ov?.id) ?? ids[i], ov, short: short && !usedShorts.has(short.toUpperCase()) ? short : undefined };
+    const candShort = str(ov?.short)?.slice(0, 3) ?? shortcuts.get(resolve(dir));
+    const short = candShort && !usedShorts.has(candShort.toUpperCase()) ? candShort : undefined;
+    if (short) usedShorts.add(short.toUpperCase());
+    return { dir, id: str(ov?.id) ?? ids[i], ov, short };
   });
-  for (const p of partial) if (p.short) usedShorts.add(p.short.toUpperCase());
 
   return partial.map((p) => {
     const short = p.short ?? letterCandidates(p.dir).find((l) => !usedShorts.has(l)) ?? '?';
@@ -129,8 +130,8 @@ export function detectCodexAccounts(dirs: string[], opts: CodexDetectOptions = {
     let color = str(p.ov?.color);
     if (!color) {
       color = ACCOUNT_COLORS.find((c) => !usedColors.has(c)) ?? ACCOUNT_COLORS[usedColors.size % ACCOUNT_COLORS.length];
-      usedColors.add(color);
     }
+    usedColors.add(color);
     const acc: DetectedAccount = {
       id: p.id,
       provider: 'codex',

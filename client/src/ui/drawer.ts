@@ -41,7 +41,7 @@ import {
 import { access } from '../net/access';
 import { PermissionCard } from './permission';
 import { canRenameRoom } from './roomrename';
-import { accountChipLabel, accountProvider, CODEX_LIVE_HINT, codexApprovalLabel, providerOf } from './provider';
+import { accountChipLabel, accountProvider, CODEX_LIVE_HINT, codexApprovalLabel, PROVIDER_INFO, providerOf } from './provider';
 import { ptyControllable } from './ptyapi';
 import { createAgentRow, updateAgentRow } from './rows';
 import { SocialSection } from './social';
@@ -544,8 +544,8 @@ class AgentView {
     updateAccountChip(this.accChip, account, a.account, a.provider);
     setText(this.accName, account?.name ?? a.account);
     updateProviderTag(this.accProv, provider, account?.name ?? '');
-    // E-mail (Claude Code) ou, no Codex (sem e-mail), o plano.
-    const accSub = account?.email ?? (codex && account?.plan ? tr('plano {0}', [account.plan]) : '');
+    // E-mail (Claude Code) ou, no Codex/Antigravity (sem e-mail), o plano.
+    const accSub = account?.email ?? (PROVIDER_INFO[provider].hasPlanSubtitle && account?.plan ? tr('plano {0}', [account.plan]) : '');
     setText(this.accEmail, accSub);
     setHidden(this.accEmail, !accSub);
     setText(this.roomName, room?.name ?? a.roomId);
@@ -573,11 +573,14 @@ class AgentView {
     setHidden(this.alert, !waiting || this.perm.visible);
     if (waiting) {
       const accName = account?.name ?? a.account;
-      const where = codex
-        ? tr('ao Codex{0}', [/codex/i.test(accName) ? '' : ` (${accName})`])
-        : provider === 'pi'
-          ? tr('ao Pi{0}', [/\bpi\b/i.test(accName) ? '' : ` (${accName})`])
-          : tr('ao terminal da {0}', [accName]);
+      const where =
+        provider === 'codex'
+          ? tr('ao Codex{0}', [/codex/i.test(accName) ? '' : ` (${accName})`])
+          : provider === 'antigravity'
+            ? tr('ao Antigravity{0}', [/antigravity|agy/i.test(accName) ? '' : ` (${accName})`])
+            : provider === 'pi'
+              ? tr('ao Pi{0}', [/\bpi\b/i.test(accName) ? '' : ` (${accName})`])
+              : tr('ao terminal da {0}', [accName]);
       setText(this.alertText, tr('Vá {0} em {1} para responder{2}', [where, room?.name ?? tr('seu projeto'), a.waitingFor ? `: ${a.waitingFor}` : '.']));
     }
     // Perguntas do AskUserQuestion (só leitura): só o Claude Code pergunta pelo escritório.
@@ -748,7 +751,16 @@ class AgentView {
     st.set('branch', a.gitBranch ?? null);
     // Codex: a política de aprovação (quando o servidor a manda) no lugar do modo de permissão do Claude Code.
     st.label('perm', codex ? tr('Aprovações') : tr('Permissões'));
-    st.set('perm', a.kind !== 'main' || prov === 'pi' ? null : codex ? (a.permissionMode ? codexApprovalLabel(a.permissionMode) : null) : permissionLabel(a.permissionMode));
+    st.set(
+      'perm',
+      a.kind !== 'main' || prov === 'pi' || prov === 'antigravity'
+        ? null
+        : codex
+          ? a.permissionMode
+            ? codexApprovalLabel(a.permissionMode)
+            : null
+          : permissionLabel(a.permissionMode),
+    );
 
     setText(this.sessionValue, a.sessionId);
     setTitle(this.sessionValue, a.sessionId);

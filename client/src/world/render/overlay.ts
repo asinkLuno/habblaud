@@ -14,6 +14,7 @@ import type { Sim } from '../sim/sim';
 import { buildAnim } from './anim';
 import { drawFxBanner } from './github-fx';
 import type { HeadInfo, Renderer } from './renderer';
+import { PROVIDER_BADGE } from '../../../../shared/types';
 import { tr } from '../../../../shared/i18n';
 
 // A Pixelify Sans tem o "C" maiúsculo quase fechado (lê-se "Oopa" em vez de "Copa") em qualquer
@@ -876,7 +877,7 @@ export class Overlay {
     const chipW = acc ? 13 : 0;
     const visitor = ch === this.sim.visitor;
     const badgeW = visitor ? this.measure(BADGE_FONT, visitorBadge()) + 7 : ch.info.kind === 'sub' && !l.compact ? this.measure(BADGE_FONT, 'SUB') + 7 : 0;
-    const badgeText = ch.info.provider === 'codex' ? CODEX_BADGE : ch.info.provider === 'antigravity' ? 'AGY' : ch.info.provider === 'pi' ? 'PI' : '';
+    const badgeText = PROVIDER_BADGE[ch.info.provider ?? 'claude'];
     const codexW = badgeText && !l.compact ? this.measure(BADGE_FONT, badgeText) + 7 : 0;
     return { nameW, chipW, badgeW, codexW };
   }
@@ -908,13 +909,7 @@ export class Overlay {
     const ch = l.ch;
     const acc = this.sim.accounts.get(ch.info.account);
     const sub = ch.info.kind === 'sub';
-    const codex =
-      ch.info.provider === 'codex' ||
-      ch.info.provider === 'antigravity' ||
-      ch.info.provider === 'pi' ||
-      acc?.provider === 'codex' ||
-      acc?.provider === 'antigravity' ||
-      acc?.provider === 'pi';
+    const hollow = (ch.info.provider ?? 'claude') !== 'claude' || (acc?.provider ?? 'claude') !== 'claude';
     const { nameW, chipW, badgeW, codexW } = this.labelWidth(l);
     const { x, y, w, h } = l;
     const selected = sel.agent === ch.id;
@@ -923,7 +918,7 @@ export class Overlay {
     ctx.roundRect(x, y, w, h, 7.5);
     ctx.fill();
     let cx = x + 4;
-    if (acc && codex) {
+    if (acc && hollow) {
       // Codex: chip vazado de cantos em degrau (fundo escuro, borda e letra na cor da conta), como nos painéis.
       steppedRect(ctx, cx, y + h / 2 - 5, 10, 10, 2);
       ctx.fillStyle = CODEX_CHIP_BG;
@@ -971,7 +966,7 @@ export class Overlay {
       ctx.fill();
     }
     if (codexW) {
-      const badgeText = ch.info.provider === 'antigravity' ? 'AGY' : ch.info.provider === 'pi' ? 'PI' : CODEX_BADGE;
+      const badgeText = PROVIDER_BADGE[ch.info.provider ?? 'claude'];
       ctx.fillStyle = 'rgba(255,255,255,0.16)';
       ctx.beginPath();
       ctx.roundRect(cx, y + 3, codexW, h - 6, 3);

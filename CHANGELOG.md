@@ -26,6 +26,20 @@ do meio (0.**3**.0).
 
 ### Corrigido
 
+- **Antigravity CLI: detecção de subagentes e estabilidade da fonte.** Subagentes disparados por `invoke_subagent` agora
+  são reconhecidos imediatamente pelo transcript do agente pai (mesmo sem hooks ou quando `jetbox_summaries_proto.pb`
+  atrasa/congela no Docker), sem deixar agentes principais fantasma ao promover `main → sub` no `Office`; corrigidos
+  também o duplo `unwrapArgs`, pareamento FIFO de `pendingCalls`, `PLANNER_RESPONSE` em `RUNNING`, decodificação de
+  `gitBranch`/varints truncados no protobuf, cache de resumos e restrição de `hintTranscript` à pasta da conversa.
+- **Pi coding agent: descoberta, ciclo de vida, extensão e instalador.** Corrigida a colisão de `auth.json` com
+  `isCodexHome`, a validação estrita de `sessionFile` em `sessions/`, a ressurreição de sessões encerradas em `poll()`,
+  a recuperação via `heartbeat` ocioso, o contrato de `FileTail` (`reset`/`more`/`missing`), a precedência de
+  `stopReason: 'aborted' | 'error'`, vazamentos de socket/timers em `mod/habblaud-pi/habblaud.ts` e a proteção contra
+  sobrescrita/remoção de arquivos de usuário em `scripts/pi-install.ts` (agora incluído no `typecheck`).
+- **Habblaud World, Docker e interface unificada por provedor.** `BuildingTokens` e `BuildingUplink` agora omitem
+  tokens/sinais dos provedores excluídos da projeção do World (`antigravity` e `pi`), `scripts/docker-up.ts` respeita
+  as chaves `HABBLAUD_*=0` no `.env`, `/api/health` expõe `antigravityEvents` e a UI usa `PROVIDER_INFO` unificado para
+  corrigir chips, custos e rótulos de Antigravity/Pi em "Meu dia", gaveta, cartões de uso e terminal.
 - **Docker (`npm run docker:up`): detecção e montagem das contas do Antigravity CLI e do Pi.** O `scripts/docker-up.ts`
   agora descobre automaticamente as pastas do Antigravity CLI (`~/.gemini/antigravity-cli*`, `ANTIGRAVITY_CLI_HOME` ou
   `HABBLAUD_ANTIGRAVITY_DIRS`) e do Pi (`~/.pi/agent`, `PI_CODING_AGENT_DIR` ou `HABBLAUD_PI_DIRS`), monta somente as

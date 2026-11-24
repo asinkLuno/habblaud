@@ -107,7 +107,10 @@ describe('ferramenta (Claude Code ou Codex)', () => {
     const c = { short: 'C' };
     const p = { short: 'P', provider: 'pi' as const };
     const x = { short: 'X', provider: 'codex' as const };
+    const g = { short: 'G', provider: 'antigravity' as const };
     expect(emptyOfficeHint([c, p])).toBe('Abra o Claude Code (atalho c) ou o Pi em qualquer projeto e veja seu agente chegar.');
     expect(emptyOfficeHint([c, x, p])).toBe('Abra o Claude Code (atalho c), o Codex ou o Pi em qualquer projeto e veja seu agente chegar.');
+    expect(emptyOfficeHint([c, g])).toContain('Antigravity');
+    expect(emptyOfficeHint([c, x, g, p])).toContain('Antigravity');
   });
 });

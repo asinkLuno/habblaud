@@ -2,6 +2,7 @@
 // Funções puras (sem DOM), testadas em ui/model.test.ts.
 import type { AccountInfo, Activity, AgentInfo, AgentStatus, OfficeSnapshot, RoomInfo, ShellJob, TaskItem } from '../../../shared/types';
 import { formatElapsed, normalizeSearch } from './format';
+import { providerOf, providerSearchTerms } from './provider';
 import { tr } from '../../../shared/i18n';
 
 export const STATUS_LABEL: Record<AgentStatus, string> = {
@@ -323,8 +324,7 @@ export interface RoomGroup {
 function accountText(account: AccountInfo | undefined): string {
   if (!account) return '';
   // A ferramenta entra na busca: "codex", "antigravity"/"agy" ou "pi" acha os agentes daquela ferramenta.
-  const prov = account.provider === 'codex' ? 'Codex' : account.provider === 'antigravity' ? 'Antigravity agy' : account.provider === 'pi' ? 'Pi' : '';
-  return [account.short, account.name, account.email ?? '', account.id, prov].join(' ');
+  return [account.short, account.name, account.email ?? '', account.id, providerSearchTerms(providerOf(account))].join(' ');
 }
 
 /** Verdadeiro se o agente bate com a busca textual (sem acentos, sem diferenciar maiúsculas). */

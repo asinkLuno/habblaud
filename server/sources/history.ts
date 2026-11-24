@@ -9,6 +9,7 @@ import { join, sep } from 'node:path';
 import { truncate } from '../../shared/activity';
 import type { AgentInfo, RecentSession } from '../../shared/types';
 import { errMsg, log } from '../log';
+import { mapLimit } from './async';
 import type { HistoryProvider, HistoryResolveResult } from './source';
 import { sessionDirOf } from './subagents';
 import { createTerminalParser } from './terminal';
@@ -301,18 +302,4 @@ function firstPrompt(lines: readonly string[]): string | undefined {
     if (user?.kind === 'user' && user.text.trim()) return truncate(user.text, TITLE_MAX);
   }
   return undefined;
-}
-
-/** map() assíncrono com no máximo `limit` tarefas ao mesmo tempo (mantém a ordem). */
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
 }

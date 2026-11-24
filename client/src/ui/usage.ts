@@ -12,7 +12,7 @@ import type { UiContext } from './context';
 import { h, KeyedList, setAttr, setHidden, setStyleVar, setText, setTitle, setVariant } from './dom';
 import { FIVE_HOURS_MS, relativeTime, usageLevel, usageWindowView, WEEK_MS, type UsageWindowView } from './format';
 import { ICONS } from './icons';
-import { isAntigravity, isCodex, isPi, providerOf, showsProviderTag } from './provider';
+import { isAntigravity, isCodex, isPi, PROVIDER_INFO, PROVIDER_NAME, providerOf, providerSuffix, showsProviderTag } from './provider';
 import { usageRowFits } from './usage-row';
 import { createAccountChip, createProviderTag, updateAccountChip, updateProviderTag } from './widgets';
 import { tr } from '../../../shared/i18n';
@@ -175,11 +175,12 @@ export function showsUsageAge(a: Pick<AccountInfo, 'usage' | 'usageStatus' | 'pr
   return state === 'stale' || (isCodex(a) && state !== 'empty');
 }
 
-/** Linha embaixo do nome: e-mail; no Codex (sem e-mail), o plano; nas outras, a pasta. */
+/** Linha embaixo do nome: e-mail; no Codex/Antigravity (sem e-mail), o plano ou nome; no Pi, Pi; nas outras, a pasta. */
 export function usageSubtitle(a: Pick<AccountInfo, 'email' | 'plan' | 'configDir' | 'provider'>): string {
   if (a.email) return a.email;
-  if (isCodex(a)) return a.plan ? tr('plano {0}', [a.plan]) : 'Codex';
-  if (isPi(a)) return 'Pi';
+  const prov = providerOf(a);
+  if (PROVIDER_INFO[prov].hasPlanSubtitle) return a.plan ? tr('plano {0}', [a.plan]) : PROVIDER_INFO[prov].toolLabel;
+  if (prov === 'pi') return 'Pi';
   return a.configDir;
 }
 
@@ -339,15 +340,15 @@ export class UsageCards {
   private updateCard(card: HTMLElement, a: AccountInfo): void {
     const r = this.refs.get(card)!;
     const now = this.ctx.now();
+    const prov = providerOf(a);
     const codex = isCodex(a);
-    const agy = isAntigravity(a);
     const pi = isPi(a);
     updateAccountChip(r.chip, a);
     setStyleVar(card, '--acc', a.color);
     setText(r.name, a.name);
-    updateProviderTag(r.prov, providerOf(a), a.name);
+    updateProviderTag(r.prov, prov, a.name);
     setText(r.email, usageSubtitle(a));
-    setAttr(card, 'aria-label', tr('{0}{1}: uso do plano', [a.name, codex ? ' (Codex)' : agy ? ' (Antigravity)' : pi ? ' (Pi)' : '']));
+    setAttr(card, 'aria-label', tr('{0}{1}: uso do plano', [a.name, providerSuffix(prov)]));
 
     const usage = a.usage;
     const state = cardState(a);
@@ -397,15 +398,14 @@ export class UsageCards {
   }
 
   private updateTip(r: CardRefs, a: AccountInfo, state: CardState, five: UsageWindowView | null, week: UsageWindowView | null, now: number): void {
-    const codex = isCodex(a);
-    const agy = isAntigravity(a);
-    const pi = isPi(a);
-    const tag = showsProviderTag(providerOf(a), a.name) ? ` · ${codex ? 'Codex' : agy ? 'Antigravity' : 'Pi'}` : '';
+    const prov = providerOf(a);
+    const codex = prov === 'codex';
+    const agy = prov === 'antigravity';
+    const pi = prov === 'pi';
+    const tag = showsProviderTag(prov, a.name) ? ` · ${PROVIDER_NAME[prov]}` : '';
     setText(r.tipTitle, `${a.name}${tag}${a.plan ? tr(' · plano {0}', [a.plan]) : ''}`);
     const rows: [string, string][] = [];
-    if (codex) rows.push([tr('Ferramenta'), 'Codex']);
-    else if (agy) rows.push([tr('Ferramenta'), 'Antigravity CLI']);
-    else if (pi) rows.push([tr('Ferramenta'), 'Pi']);
+    if (prov !== 'claude') rows.push([tr('Ferramenta'), PROVIDER_INFO[prov].toolLabel]);
     if (a.email) rows.push(['E-mail', a.email]);
     if (a.organization) rows.push([tr('Organização'), a.organization]);
     if (a.plan) rows.push([tr('Plano'), a.plan]);
@@ -415,9 +415,9 @@ export class UsageCards {
     if (u && (u.fiveHour || u.sevenDay)) {
       rows.push([tr('Sessão de 5 h'), five?.summary ?? '—']);
       rows.push([tr('Semana'), week?.summary ?? '—']);
-      // Opus e Sonnet são janelas do Claude: no Codex e no Antigravity não existem.
-      const opus = codex || agy ? null : usageWindowView(u.sevenDayOpus, u.fetchedAt, now, WEEK_MS);
-      const sonnet = codex || agy ? null : usageWindowView(u.sevenDaySonnet, u.fetchedAt, now, WEEK_MS);
+      // Opus e Sonnet são janelas exclusivas do Claude Code.
+      const opus = prov !== 'claude' ? null : usageWindowView(u.sevenDayOpus, u.fetchedAt, now, WEEK_MS);
+      const sonnet = prov !== 'claude' ? null : usageWindowView(u.sevenDaySonnet, u.fetchedAt, now, WEEK_MS);
       if (opus) rows.push([tr('Opus (semana)'), opus.summary]);
       if (sonnet) rows.push([tr('Sonnet (semana)'), sonnet.summary]);
     }
@@ -429,7 +429,7 @@ export class UsageCards {
     syncRows(r.tipRows, rows);
 
     if (pi) {
-      setText(r.tipNote, tr('Para eventos ao vivo e mensagens pelo escritório no Pi, rode `npm run pi:install`.'));
+      r.tipNote.replaceChildren(...richText(tr('Para eventos ao vivo e mensagens pelo escritório no Pi, rode `npm run pi:install`.')));
       setHidden(r.tipNote, false);
       setHidden(r.tipSetup, true);
       return;

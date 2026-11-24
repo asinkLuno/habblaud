@@ -10,6 +10,8 @@ import { tr } from '../../../shared/i18n';
 export const PLUGIN_HINT = tr('Para mandar mensagens daqui: npm run mod:install (plugin habblaud-mensagens)');
 /** A mesma dica para um agente do Codex sem entregador (no modo Node o próprio servidor entrega). */
 export const CODEX_BRIDGE_HINT = tr('Para mandar mensagens ao Codex: com o Habblaud no Docker, deixe npm run codex:bridge rodando; no modo Node funciona sozinho');
+/** A mesma dica para um agente do Pi sem a extensão conectada. */
+export const PI_HINT = tr('Para mandar mensagens ao Pi: rode npm run pi:install');
 
 /**
  * - ready: dá para mandar (principal com o plugin conectado, recurso ligado, página local);
@@ -48,7 +50,7 @@ export function composerMode(agent: AgentInfo | undefined, env: ComposerEnv): Co
   }
   if (!env.local) return { kind: 'off', text: tr('Para mandar mensagens por aqui, abra o Habblaud por http://localhost (ou 127.0.0.1)') };
   if (agy) return { kind: 'off', text: tr('Para responder, use o terminal do Antigravity CLI') };
-  if (!agent.canMessage) return { kind: 'hint', text: codex ? CODEX_BRIDGE_HINT : pi ? tr('Para mandar mensagens ao Pi: rode npm run pi:install') : PLUGIN_HINT };
+  if (!agent.canMessage) return { kind: 'hint', text: codex ? CODEX_BRIDGE_HINT : pi ? PI_HINT : PLUGIN_HINT };
   return { kind: 'ready' };
 }
 
@@ -134,12 +136,18 @@ export function pollDelay(elapsed: number): number {
 export const LOST_ERROR = tr('o Habblaud não conhece mais esta mensagem (ele reiniciou?)');
 export const TIMEOUT_ERROR = tr('sem notícia da entrega: confira no terminal do Claude Code');
 export const CODEX_TIMEOUT_ERROR = tr('sem notícia da entrega: confira no Codex');
+export const ANTIGRAVITY_TIMEOUT_ERROR = tr('sem notícia da entrega: confira no Antigravity CLI');
 export const PI_TIMEOUT_ERROR = tr('sem notícia da entrega: confira no Pi');
 export const OFFLINE_ERROR = tr('não foi possível falar com o Habblaud');
 
+const TIMEOUT_BY_PROVIDER: Record<Provider, string> = {
+  claude: TIMEOUT_ERROR,
+  codex: CODEX_TIMEOUT_ERROR,
+  antigravity: ANTIGRAVITY_TIMEOUT_ERROR,
+  pi: PI_TIMEOUT_ERROR,
+};
+
 /** Prazo da consulta acabou sem notícia: onde conferir. */
 export function timeoutError(provider: Provider = 'claude'): string {
-  if (provider === 'codex') return CODEX_TIMEOUT_ERROR;
-  if (provider === 'pi') return PI_TIMEOUT_ERROR;
-  return TIMEOUT_ERROR;
+  return TIMEOUT_BY_PROVIDER[provider];
 }

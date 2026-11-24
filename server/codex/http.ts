@@ -8,14 +8,10 @@
 //
 //   POST /api/codex/events   (hook)   {account?, codexHome?, event: <stdin do hook, textos cortados>}: 200 {ok}
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { isAbsolute, resolve } from 'node:path';
 import type { AccountEntry } from '../accounts/service';
-import { HttpError, readJson, sendJson } from '../http/app';
-import { errMsg, log } from '../log';
+import { accountByDir, dispatchLiveEvent, parseLiveEnvelope, type Rec } from '../http/live-events';
 import type { CodexLive } from '../sources/codex/live';
 import { tr } from '../../shared/i18n';
-
-type Rec = Record<string, unknown>;
 
 export interface CodexHookEvent {
   /** Conta calculada pelo hook (basename do CODEX_HOME). */
@@ -26,25 +22,18 @@ export interface CodexHookEvent {
   event: Rec;
 }
 
-function rec(v: unknown): Rec | undefined {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Rec) : undefined;
-}
-
-function shortStr(v: unknown, max: number): string | undefined {
-  return typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : undefined;
-}
-
 /** Corpo de POST /api/codex/events. Sem `event` (objeto com hook_event_name): 400. */
 export function parseCodexEvent(raw: unknown): CodexHookEvent {
-  const r = rec(raw);
-  const event = rec(r?.event);
-  if (!r || !event || typeof event.hook_event_name !== 'string') throw new HttpError(400, 'esperado {account?, codexHome?, event: <JSON do hook do Codex>}');
-  const out: CodexHookEvent = { event };
-  const account = shortStr(r.account, 200);
-  const codexHome = shortStr(r.codexHome, 4_096);
-  if (account) out.account = account;
-  if (codexHome) out.codexHome = codexHome;
-  return out;
+  const env = parseLiveEnvelope(raw, {
+    dirField: 'codexHome',
+    validEvent: (e) => typeof e.hook_event_name === 'string',
+    errorMessage: 'esperado {account?, codexHome?, event: <JSON do hook do Codex>}',
+  });
+  return {
+    event: env.event,
+    ...(env.account ? { account: env.account } : {}),
+    ...(env.dir ? { codexHome: env.dir } : {}),
+  };
 }
 
 /**
@@ -52,12 +41,7 @@ export function parseCodexEvent(raw: unknown): CodexHookEvent {
  * ou pelo lido por este processo); senão a que ele calculou (o basename não sabe dos ids desambiguados, ex. ".codex~2").
  */
 export function codexAccountOf(entries: readonly AccountEntry[], account: string | undefined, codexHome: string | undefined): string | undefined {
-  if (codexHome && isAbsolute(codexHome)) {
-    const abs = resolve(codexHome);
-    const e = entries.find((x) => resolve(x.detected.configDir) === abs || resolve(x.dir) === abs);
-    if (e) return e.id;
-  }
-  return account;
+  return accountByDir(entries, account, codexHome);
 }
 
 /** Trata POST /api/codex/events (método e Host já conferidos). `ok` = a fonte do Codex aproveitou o evento. */
@@ -66,14 +50,10 @@ export async function handleCodexEvent(
   res: ServerResponse,
   deps: { live?: CodexLive; entries: () => readonly AccountEntry[] },
 ): Promise<void> {
-  const body = parseCodexEvent(await readJson(req));
-  let ok = false;
-  if (deps.live) {
-    try {
-      ok = deps.live.applyHookEvent(codexAccountOf(deps.entries(), body.account, body.codexHome), body.event) === true;
-    } catch (err) {
-      log.warnOnce(`codex-event:${errMsg(err)}`, tr('Eventos do Codex: falha ao aplicar um evento ({0}).', [errMsg(err)]));
-    }
-  }
-  sendJson(res, 200, { ok });
+  await dispatchLiveEvent(req, res, {
+    parse: parseCodexEvent,
+    logKey: 'codex-event',
+    logMessage: (msg) => tr('Eventos do Codex: falha ao aplicar um evento ({0}).', [msg]),
+    apply: deps.live ? (body) => deps.live!.applyHookEvent(codexAccountOf(deps.entries(), body.account, body.codexHome), body.event) : undefined,
+  });
 }

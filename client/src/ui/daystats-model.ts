@@ -13,7 +13,9 @@ import {
   type TimedStatus,
   type WaitDayStats,
 } from '../../../shared/daystats';
+import type { Provider } from '../../../shared/types';
 import { formatInt, formatTokens, formatUSD } from './format';
+import { providerRecordsCost } from './provider';
 import { intlLocale, tr } from '../../../shared/i18n';
 
 /** Rótulos dos status no painel (o mesmo vocabulário do escritório, do ponto de vista de quem espera). */
@@ -250,20 +252,27 @@ export interface AccountCard {
   waiting: string;
   sessions: string;
   tokens: string;
-  /** null = conta do Codex (ele não grava custo: o cartão mostra só os tokens). */
+  /** null = ferramenta sem custo nos transcripts (Codex, Antigravity: o cartão mostra só os tokens). */
   cost: string | null;
-  /** Conta do Codex (chip vazado). */
+  /** Conta do Codex (compatibilidade). */
   codex: boolean;
+  /** Ferramenta da conta. */
+  provider: Provider;
 }
 
-/** `isCodex` diz quais contas são do Codex (o protocolo do dia não traz a ferramenta: vem do snapshot ou do id). */
-export function accountCards(accounts: readonly AccountDayStats[], isCodex: (id: string) => boolean = () => false): AccountCard[] {
+/** `providerOfAccount` diz a ferramenta (ou `boolean` indicando Codex, por compatibilidade com testes antigos). */
+export function accountCards(
+  accounts: readonly AccountDayStats[],
+  providerOfAccount: (id: string) => Provider | boolean = () => 'claude',
+): AccountCard[] {
   const work = accounts.reduce((n, a) => n + a.ms.working, 0);
   return accounts
     .filter((a) => totalMs(a.ms) > 0 || a.counts.tokensIn > 0)
     .map((a) => {
       const share = work > 0 ? Math.round((a.ms.working / work) * 100) : 0;
-      const codex = isCodex(a.id);
+      const raw = providerOfAccount(a.id);
+      const provider: Provider = typeof raw === 'boolean' ? (raw ? 'codex' : 'claude') : raw;
+      const recordsCost = providerRecordsCost(provider);
       return {
         id: a.id,
         name: a.name,
@@ -275,8 +284,9 @@ export function accountCards(accounts: readonly AccountDayStats[], isCodex: (id:
         waiting: formatAgentTime(a.ms.waiting),
         sessions: `${formatInt(a.sessions)} ${a.sessions === 1 ? tr('sessão') : tr('sessões')}${a.subagents ? ` · ${formatInt(a.subagents)} sub` : ''}`,
         tokens: formatTokens(a.counts.tokensIn + a.counts.tokensOut),
-        cost: codex ? null : a.counts.costUSD > 0 ? formatUSD(a.counts.costUSD) : '—',
-        codex,
+        cost: !recordsCost ? null : a.counts.costUSD > 0 ? formatUSD(a.counts.costUSD) : '—',
+        codex: provider === 'codex',
+        provider,
       };
     });
 }

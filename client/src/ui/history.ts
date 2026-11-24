@@ -5,12 +5,12 @@
 // puros e testados em ui/history.test.ts; a montagem usa só textContent. Sessões do Codex vêm com o selo "Codex" e a
 // busca acha "codex".
 import { access } from '../net/access';
-import type { RecentSession } from '../../../shared/types';
+import { isProvider, type RecentSession } from '../../../shared/types';
 import type { UiComponent, UiContext } from './context';
 import { h, iconButton, setAttr, setHidden, setText, setTitle } from './dom';
 import { calendarDayDiff, formatClock, formatDateTime, normalizeSearch, plural, shortPath } from './format';
 import { ICONS } from './icons';
-import { PROVIDER_NAME, providerOf } from './provider';
+import { PROVIDER_NAME, providerOf, providerSearchTerms } from './provider';
 import { sessionProjectName, TERMINAL_UNAVAILABLE_HINT, type TerminalControl } from './terminal';
 import { createAccountChip, updateAccountChip } from './widgets';
 import { intlLocale, tr } from '../../../shared/i18n';
@@ -49,7 +49,7 @@ export function parseRecentSessions(raw: unknown): RecentSession[] {
     const firstAt = num(o.firstAt);
     const agentId = str(o.agentId);
     // Ausente = Claude Code (nunca grava 'claude').
-    if (o.provider === 'codex' || o.provider === 'antigravity' || o.provider === 'pi') s.provider = o.provider;
+    if (isProvider(o.provider) && o.provider !== 'claude') s.provider = o.provider;
     if (project) s.project = project;
     if (title) s.title = title;
     if (firstAt !== undefined) s.firstAt = firstAt;
@@ -67,8 +67,7 @@ export function filterSessions(list: readonly RecentSession[], query: string, ac
   const terms = normalizeSearch(query).split(/\s+/).filter(Boolean);
   if (!terms.length) return list.slice();
   return list.filter((s) => {
-    const prov = providerOf(s);
-    const toolTag = prov === 'claude' ? '' : prov === 'antigravity' ? 'Antigravity agy' : PROVIDER_NAME[prov];
+    const toolTag = providerSearchTerms(providerOf(s));
     const hay = normalizeSearch([s.title ?? '', s.project ?? '', s.projectDir, accountLabel(s.account), toolTag].join(' '));
     return terms.every((t) => hay.includes(t));
   });

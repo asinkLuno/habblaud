@@ -3367,4 +3367,11 @@ export const ZH_CN: Readonly<Record<string, string>> = {
   "· {0}: extensão não estava instalada.": "· {0}：此前未安装扩展。",
   "[dry-run] removeria {0}": "[dry-run] 将移除 {0}",
   "✓ Extensão removida de {0}": "✓ 已从 {0} 移除扩展",
+  "sem notícia da entrega: confira no Antigravity CLI": "未收到送达回执：请在 Antigravity CLI 中确认",
+  "ao Antigravity{0}": "到 Antigravity{0}",
+  "o Antigravity CLI ainda não recebe mensagens pelo escritório": "Antigravity CLI 暂不支持从办公室接收消息",
+  "Abra o Claude Code{0} ou o Antigravity em qualquer projeto e veja seu agente chegar.": "在任意项目中打开 Claude Code{0} 或 Antigravity，即可看到你的代理到达。",
+  "Abra o Claude Code{0}, o Codex ou o Antigravity em qualquer projeto e veja seu agente chegar.": "在任意项目中打开 Claude Code{0}、Codex 或 Antigravity，即可看到你的代理到达。",
+  "Abra o Claude Code{0}, o Antigravity ou o Pi em qualquer projeto e veja seu agente chegar.": "在任意项目中打开 Claude Code{0}、Antigravity 或 Pi，即可看到你的代理到达。",
+  "Abra o Claude Code{0}, o Codex, o Antigravity ou o Pi em qualquer projeto e veja seu agente chegar.": "在任意项目中打开 Claude Code{0}、Codex、Antigravity 或 Pi，即可看到你的代理到达。",
 };
