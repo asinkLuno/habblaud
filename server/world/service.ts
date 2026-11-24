@@ -39,6 +39,7 @@
 //   segundo plano (só espera a leitura quando ainda não há nada guardado).
 import { getLocale, tr } from '../../shared/i18n';
 import {
+  toWorldLocale,
   worldLastError,
   type WorldBuildingStop,
   type WorldKnownErrorCode,
@@ -391,7 +392,7 @@ export class WorldService {
       const client = this.o.client!;
       const altcha = await this.altcha(client);
       if (!altcha.ok) return altcha;
-      const locale = input.locale ?? this.o.locale?.() ?? (getLocale() as WorldLocale);
+      const locale = input.locale ?? this.o.locale?.() ?? toWorldLocale(getLocale());
       return client.register({
         email: input.email,
         password: input.password,

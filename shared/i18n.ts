@@ -9,7 +9,7 @@
 // Os textos de atividade são montados pelo servidor, então seguem o idioma do servidor.
 import { DICTIONARIES } from './locales/all';
 
-export type Locale = 'pt-BR' | 'en' | 'es' | 'fr';
+export type Locale = 'pt-BR' | 'en' | 'es' | 'fr' | 'zh-CN';
 
 /** Na ordem do seletor; o nome de cada idioma vai na própria língua, para quem não entende o idioma atual. */
 export const LOCALES: { id: Locale; name: string }[] = [
@@ -17,6 +17,7 @@ export const LOCALES: { id: Locale; name: string }[] = [
   { id: 'en', name: 'English' },
   { id: 'es', name: 'Español' },
   { id: 'fr', name: 'Français' },
+  { id: 'zh-CN', name: '简体中文' },
 ];
 
 /** Chave da preferência salva no navegador. */
@@ -30,7 +31,7 @@ export function registerDictionary(l: Locale, dict: Readonly<Record<string, stri
   DICTS[l] = dict;
 }
 
-/** "fr-FR", "fr_CA.UTF-8", "pt", "pt_BR"... -> idioma suportado; undefined se não for nenhum deles. */
+/** "fr-FR", "fr_CA.UTF-8", "pt", "pt_BR", "zh_CN.UTF-8"... -> idioma suportado; undefined se não for nenhum deles. */
 export function normalizeLocale(v: string | null | undefined): Locale | undefined {
   const s = (v ?? '').trim().toLowerCase().replace('_', '-');
   if (!s) return undefined;
@@ -38,14 +39,15 @@ export function normalizeLocale(v: string | null | undefined): Locale | undefine
   if (s === 'pt' || s.startsWith('pt-')) return 'pt-BR';
   if (s === 'en' || s.startsWith('en-')) return 'en';
   if (s === 'es' || s.startsWith('es-')) return 'es';
+  if (s === 'zh' || s.startsWith('zh-')) return 'zh-CN';
   return undefined;
 }
 
 /**
  * Idioma do servidor (atividades, avisos, logs). HABBLAUD_LANG vale para qualquer idioma. Do sistema (LC_ALL,
- * LC_MESSAGES, LANG e, por último, o Intl) vale francês, espanhol ou português, mas não o inglês: muitas máquinas e
- * containers vêm em inglês por padrão (en_US, ou o en-US do Node sem LANG), mesmo para quem usa outra língua, e o
- * escritório mudaria de idioma sozinho. Para o servidor em inglês: HABBLAUD_LANG=en.
+ * LC_MESSAGES, LANG e, por último, o Intl) vale francês, espanhol, chinês ou português, mas não o inglês: muitas
+ * máquinas e containers vêm em inglês por padrão (en_US, ou o en-US do Node sem LANG), mesmo para quem usa outra
+ * língua, e o escritório mudaria de idioma sozinho. Para o servidor em inglês: HABBLAUD_LANG=en.
  */
 export function serverLocale(env: Record<string, string | undefined>, intl?: string): Locale {
   const own = normalizeLocale(env.HABBLAUD_LANG);
@@ -113,5 +115,13 @@ export function tr(src: string, args?: readonly unknown[]): string {
 
 /** Idioma no formato do Intl (datas, números). */
 export function intlLocale(): string {
-  return current === 'fr' ? 'fr-FR' : current === 'en' ? 'en-US' : current === 'es' ? 'es' : 'pt-BR';
+  return current === 'fr'
+    ? 'fr-FR'
+    : current === 'en'
+      ? 'en-US'
+      : current === 'es'
+        ? 'es'
+        : current === 'zh-CN'
+          ? 'zh-CN'
+          : 'pt-BR';
 }

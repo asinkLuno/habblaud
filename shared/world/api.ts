@@ -64,6 +64,7 @@
 // pelo `code`; `message` é só para quem lê o log ou usa o curl.
 import {
   WORLD_ERROR_CODES,
+  WORLD_LOCALES,
   type AfkMessage,
   type AppearanceParts,
   type AreaMessage,
@@ -110,6 +111,7 @@ import {
   type WorldAccess,
   type WorldBuildingPublic,
   type WorldErrorCode,
+  type WorldLocale,
   type UplinkAckError,
   type WorldPlayerPublic,
   type WorldPosition,
@@ -457,4 +459,12 @@ export function worldLastError(code: string): WorldKnownErrorCode {
   if (code === 'world_unreachable' || code === 'world_timeout') return 'network';
   if (code === 'world_bad_response' || code === 'world_error') return 'unknown';
   return isWorldKnownErrorCode(code) ? code : 'unknown';
+}
+
+/**
+ * Converte o idioma da interface para um idioma aceito pelo protocolo do Habblaud World (`WORLD_LOCALES`).
+ * Idiomas ainda não suportados pelo servidor do mundo (ex.: `zh-CN`) caem para inglês (`en`).
+ */
+export function toWorldLocale(locale: string): WorldLocale {
+  return (WORLD_LOCALES as readonly string[]).includes(locale) ? (locale as WorldLocale) : 'en';
 }

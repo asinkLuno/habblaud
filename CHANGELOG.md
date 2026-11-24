@@ -12,6 +12,9 @@ do meio (0.**3**.0).
 
 ### Adicionado
 
+- **Suporte ao idioma chinês simplificado (`zh-CN`).** O Habblaud agora oferece tradução completa para chinês
+  simplificado (简体中文) na interface, atividades do servidor, logs e scripts, com detecção automática pelo navegador
+  ou sistema (`LANG=zh_CN.UTF-8` / `HABBLAUD_LANG=zh-CN`) e seleção em **Configurações › Idioma**.
 - **Compatibilidade com o Google Antigravity CLI (`agy`).** O Habblaud agora descobre automaticamente as contas em
   `~/.gemini/antigravity-cli` (ou `HABBLAUD_ANTIGRAVITY_DIRS`) e acompanha as sessões abertas, subagentes, ferramentas,
   tarefas em segundo plano, terminal ao vivo, histórico de sessões, entregas e limites de uso de 5 h e semanal
