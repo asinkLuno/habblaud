@@ -91,4 +91,41 @@ describe('BuildingTokens', () => {
     const t = new BuildingTokens({ stats: svc, now: () => now });
     expect(t.read()).toEqual({ day: 42_000, week: 42_000 });
   });
+
+  it('excludeAccount omite tokens de provedores fora da projeção do World (antigravity e pi)', () => {
+    let now = T0;
+    const claude: AgentInfo = {
+      id: '.claude:1', kind: 'main', provider: 'claude', roomId: '/p/loja', name: 'Ana', look: 'f', role: 'Agente principal', sessionId: 'sess-1',
+      account: '.claude', status: 'working', recent: [], tasks: [], startedAt: T0 - 60_000, lastEventAt: T0, statusSince: T0,
+      stats: { toolCalls: 0, tokensIn: 0, tokensOut: 0, subagents: 0 }, seed: 1,
+    };
+    const agy: AgentInfo = { ...claude, id: 'antigravity-cli:1', provider: 'antigravity', account: 'antigravity-cli', sessionId: 'agy-1' };
+    const pi: AgentInfo = { ...claude, id: '.pi:1', provider: 'pi', account: '.pi', sessionId: 'pi-1' };
+    let agents = [claude, agy, pi];
+    const svc = new DayStatsService({
+      dir: null,
+      tz: 'UTC',
+      now: () => now,
+      snapshot: () => ({ agents, rooms: [], accounts: [], meta: { demo: false, sources: [], startedAt: 0, version: 'teste' } }),
+    });
+    const step = (until: number) => {
+      while (now < until) {
+        now += S;
+        svc.sample(now);
+      }
+    };
+    step(T0 + 120 * S);
+    agents = [
+      { ...claude, stats: { ...claude.stats, tokensIn: 10_000, tokensOut: 5_000 } },
+      { ...agy, stats: { ...agy.stats, tokensIn: 500_000, tokensOut: 50_000 } },
+      { ...pi, stats: { ...pi.stats, tokensIn: 300_000, tokensOut: 20_000 } },
+    ];
+    step(T0 + 130 * S);
+    const t = new BuildingTokens({
+      stats: svc,
+      now: () => now,
+      excludeAccount: (id) => id === 'antigravity-cli' || id === '.pi',
+    });
+    expect(t.read()).toEqual({ day: 15_000, week: 15_000 });
+  });
 });

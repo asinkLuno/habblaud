@@ -23,6 +23,8 @@ import type { DayStatsService } from '../history/daystats';
 
 export interface BuildingTokensOptions {
   stats: Pick<DayStatsService, 'day' | 'today' | 'tz'>;
+  /** Contas que não sobem ao World (ex.: provedores omitidos da projeção) ficam fora do total. */
+  excludeAccount?: (accountId: string) => boolean;
   now?: () => number;
   /** Quanto tempo o total de hoje vale antes de reler (padrão 15 s). */
   ttlMs?: number;
@@ -68,6 +70,16 @@ export class BuildingTokens {
   private dayTotal(key: string): number {
     const r = this.o.stats.day(key, this.o.stats.tz, 'real');
     if (!r) return 0;
+    const exclude = this.o.excludeAccount;
+    if (exclude && Array.isArray(r.stats.accounts)) {
+      let total = 0;
+      for (const acc of r.stats.accounts) {
+        if (exclude(acc.id)) continue;
+        const c = acc.counts;
+        total += (Number.isFinite(c.tokensIn) ? c.tokensIn : 0) + (Number.isFinite(c.tokensOut) ? c.tokensOut : 0);
+      }
+      return total;
+    }
     const c = r.stats.totals.counts;
     return (Number.isFinite(c.tokensIn) ? c.tokensIn : 0) + (Number.isFinite(c.tokensOut) ? c.tokensOut : 0);
   }

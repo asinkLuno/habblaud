@@ -170,7 +170,13 @@ const stats = new DayStatsService({ dir: join(config.dataDir, 'stats'), snapshot
 stats.load();
 // O prédio no Habblaud World (world/uplink.ts): só com o servidor do mundo aceito. Conecta sozinho com a conta aprovada, o
 // personagem criado, a trava do terminal e sem pausa; o pacote sai só da projeção (shared/world/projection.ts).
-const worldTokens = new BuildingTokens({ stats });
+const worldTokens = new BuildingTokens({
+  stats,
+  excludeAccount: (id) => {
+    const p = accounts.find(id)?.provider;
+    return p === 'antigravity' || p === 'pi';
+  },
+});
 const worldUplink =
   world && config.world.url
     ? new BuildingUplink({
@@ -238,7 +244,7 @@ const deliveryFiles = deliveries
   ? new FileFetcher({
       direct: !config.inDocker,
       mapHostPath: (p) => {
-        for (const e of accounts.entries()) {
+        for (const e of accounts.allEntries()) {
           const host = e.detected.configDir.replace(/\/+$/, '');
           if (host && p.startsWith(`${host}/`)) return `${e.dir.replace(/\/+$/, '')}${p.slice(host.length)}`;
         }

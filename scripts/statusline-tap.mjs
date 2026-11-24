@@ -60,12 +60,12 @@ export function configDirOf(input, env = process.env, home = env.HOME || homedir
     return resolve(explicitDir.trim().replace(/^~(?=\/|$)/, home));
   }
   const tp = typeof input?.transcript_path === 'string' ? input.transcript_path : '';
-  const at = tp.lastIndexOf('/projects/');
-  if (at > 0) return resolve(tp.slice(0, at));
+  const projMatch = /^(.+)[\\/]projects[\\/]/.exec(tp);
+  if (projMatch) return resolve(projMatch[1]);
   if (isAntigravityInput(input)) {
-    const brainAt = tp.lastIndexOf('/brain/');
-    if (brainAt > 0) {
-      const candidate = resolve(tp.slice(0, brainAt));
+    const brainMatch = /^(.+)[\\/]brain[\\/]/.exec(tp);
+    if (brainMatch) {
+      const candidate = resolve(brainMatch[1]);
       if (/^\.?antigravity-cli/i.test(basename(candidate))) return candidate;
     }
     const fromAgyEnv = (env.ANTIGRAVITY_CLI_HOME ?? env.JETSKI_APP_DATA_DIR ?? '').trim();
@@ -95,14 +95,15 @@ function percent(w) {
 
 function resetsAtOf(w, now) {
   const r = w.resets_at ?? w.reset_time;
-  if (typeof r === 'number' && Number.isFinite(r)) return r;
+  const asNum = num(r);
+  if (asNum !== undefined) return asNum;
   if (typeof r === 'string' && r.trim()) {
     const ms = Date.parse(r.trim());
-    return Number.isNaN(ms) ? r.trim() : Math.round(ms / 1000);
+    if (!Number.isNaN(ms)) return Math.round(ms / 1000);
   }
   const sec = num(w.reset_in_seconds);
   if (sec !== undefined && sec >= 0) return Math.round(now / 1000 + sec);
-  return undefined;
+  return typeof r === 'string' && r.trim() ? r.trim() : undefined;
 }
 
 function windowOf(w, now = Date.now()) {
@@ -132,7 +133,7 @@ function antigravityWindows(input, now) {
   const quota = input?.quota;
   if (!quota || typeof quota !== 'object' || Array.isArray(quota)) return undefined;
   const modelId = typeof input.model?.id === 'string' ? input.model.id : typeof input.model?.display_name === 'string' ? input.model.display_name : '';
-  const isThirdParty = /\b(?:claude|gpt|opus|sonnet|haiku|o[134])\b/i.test(modelId);
+  const isThirdParty = /(?:^|[^a-z0-9])(?:claude|gpt|opus|sonnet|haiku|o[134])(?:[^a-z0-9]|$)/i.test(modelId);
   const fiveKeys = isThirdParty ? ['3p-5h', 'five_hour', '5h', 'gemini-5h'] : ['gemini-5h', 'five_hour', '5h', '3p-5h'];
   const weekKeys = isThirdParty ? ['3p-weekly', 'seven_day', 'weekly', 'gemini-weekly'] : ['gemini-weekly', 'seven_day', 'weekly', '3p-weekly'];
   const five = pickQuotaWindow(quota, fiveKeys, /(?:^|[-_])5h$|five.?hour/i, now);

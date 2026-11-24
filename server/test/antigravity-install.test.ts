@@ -7,6 +7,7 @@ import { buildHabblaudHookSpec, HOOK_KEY, parseArgs, planInstall, planUninstall,
 
 interface AntigravityHookModule {
   antigravityHomeOf(env: NodeJS.ProcessEnv, input: unknown): string;
+  eventBody(input: unknown, account: string, antigravityHome: string): Record<string, unknown>;
   run(env: NodeJS.ProcessEnv, stdinText?: string): Promise<Record<string, unknown>>;
 }
 
@@ -84,8 +85,8 @@ describe('antigravity-install e mod/habblaud-antigravity/hook.mjs', () => {
     expect(afterSettings.statusLine).toBeUndefined();
   });
 
-  it('hook.mjs deduz a pasta do Antigravity pelo transcriptPath e devolve {} sem travar quando o servidor está desligado', async () => {
-    const { antigravityHomeOf, run: runHook } = await loadHook();
+  it('hook.mjs deduz a pasta do Antigravity pelo transcriptPath, respeita JETSKI_APP_DATA_DIR e limita payload em bytes UTF-8', async () => {
+    const { antigravityHomeOf, eventBody, run: runHook } = await loadHook();
     const home = makeTempDir();
     writeFileSync(join(home, 'dummy'), '');
     const agyHome = antigravityHomeOf(
@@ -93,6 +94,16 @@ describe('antigravity-install e mod/habblaud-antigravity/hook.mjs', () => {
       { transcriptPath: `${home}/.gemini/antigravity-cli/brain/083423ec-018b-4b39-bc54-bc0d6da230b3/.system_generated/logs/transcript.jsonl` },
     );
     expect(agyHome).toBe(join(home, '.gemini', 'antigravity-cli'));
+    // Pasta não-antigravity-cli (ex.: ~/.gemini/antigravity/brain/...) cai para o padrão antigravity-cli
+    expect(
+      antigravityHomeOf({ HOME: home }, { transcriptPath: `${home}/.gemini/antigravity/brain/083423ec-018b-4b39-bc54-bc0d6da230b3/transcript.jsonl` }),
+    ).toBe(join(home, '.gemini', 'antigravity-cli'));
+    expect(antigravityHomeOf({ HOME: home, JETSKI_APP_DATA_DIR: '~/custom-agy' }, {})).toBe(join(home, 'custom-agy'));
+
+    // Payload CJK grande é limitado por bytes UTF-8 (<= 200_000 bytes)
+    const wide = Object.fromEntries(Array.from({ length: 1_500 }, (_, i) => [`k${i}`, '中'.repeat(100)]));
+    const body = eventBody({ hookEventName: 'PreToolUse', conversationId: '083423ec-018b-4b39-bc54-bc0d6da230b3', toolCall: { id: '1', name: 'write_file', args: wide } }, 'antigravity-cli', agyHome);
+    expect(Buffer.byteLength(JSON.stringify(body), 'utf8')).toBeLessThanOrEqual(200_000);
 
     const out = await runHook(
       { HOME: home, HABBLAUD_PORT: '59999' },

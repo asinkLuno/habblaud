@@ -389,6 +389,7 @@ export function createApiHandler(deps: ApiDeps): (req: IncomingMessage, res: Ser
           pty: !!deps.pty && !remote,
           messages: !!deps.messages && (!remote || trusted(req, 'messages')),
           codexEvents: !!deps.codexLive,
+          antigravityEvents: !!deps.antigravityLive,
           piEvents: !!deps.piLive,
           updates: updatesSummary(deps.updates?.status()),
           sources: deps.sources(),

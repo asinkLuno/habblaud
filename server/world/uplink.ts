@@ -699,9 +699,9 @@ export class BuildingUplink {
     this.signals.observe(this.realAgents(), this.now());
   }
 
-  /** Os agentes do escritório que podem subir (os do modo demonstração nunca). */
+  /** Os agentes do escritório que podem subir (demo e provedores não projetados no World ficam fora). */
   private realAgents(): AgentInfo[] {
-    return this.o.agents().filter((a) => !isDemoId(a.id));
+    return this.o.agents().filter((a) => !isDemoId(a.id) && a.provider !== 'antigravity' && a.provider !== 'pi');
   }
 
   /** Mudou algo: projeta depois de `debounceMs` desde a primeira mudança (sem reiniciar a espera), respeitando `minGapMs`. */

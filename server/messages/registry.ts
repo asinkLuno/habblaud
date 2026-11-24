@@ -155,6 +155,7 @@ function unavailableReason(a: AgentInfo, reachable: boolean): string | undefined
   if (!reachable) {
     if (a.provider === 'codex') return ERR_CODEX_UNAVAILABLE;
     if (a.provider === 'pi') return tr('a extensão do Habblaud no Pi não está conectada (npm run pi:install)');
+    if (a.provider === 'antigravity') return tr('o Antigravity CLI ainda não recebe mensagens pelo escritório');
     return tr('a sessão não está com o plugin habblaud-mensagens conectado (npm run mod:install)');
   }
   return undefined;
@@ -298,10 +299,10 @@ export class MessageRegistry {
     const session = shortStr(r?.session, ID_MAX);
     if (!r || !session) throw new InvalidRequest('esperado {session, account?}');
     const account = shortStr(r.account, ID_MAX);
-    // O plugin é do Claude Code: agentes do Codex nunca recebem por aqui.
+    // O plugin é do Claude Code e da extensão do Pi: Codex e Antigravity nunca recebem por aqui.
     const agent = this.opts.office
       .list()
-      .find((a) => a.kind === 'main' && a.provider !== 'codex' && a.sessionId === session && (!account || a.account === account) && present(a));
+      .find((a) => a.kind === 'main' && a.provider !== 'codex' && a.provider !== 'antigravity' && a.sessionId === session && (!account || a.account === account) && present(a));
     if (!agent) return [];
 
     const now = this.now();

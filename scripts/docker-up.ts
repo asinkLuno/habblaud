@@ -271,9 +271,18 @@ export function codexAccountsPayload(mounts: AccountMount[]): AccountPayload[] {
   });
 }
 
-/** HABBLAUD_CODEX desligado (0, false, off, no) no ambiente de quem roda o docker:up. */
-export function codexDisabled(env: NodeJS.ProcessEnv): boolean {
-  const v = env.HABBLAUD_CODEX?.trim();
+function envOrFile(env: NodeJS.ProcessEnv, envFile: string, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (key in env) return env[key];
+    const fromFile = readEnvValue(envFile, key);
+    if (fromFile !== undefined) return fromFile;
+  }
+  return undefined;
+}
+
+/** HABBLAUD_CODEX desligado (0, false, off, no) no ambiente ou .env de quem roda o docker:up. */
+export function codexDisabled(env: NodeJS.ProcessEnv, envFile = ''): boolean {
+  const v = envOrFile(env, envFile, 'HABBLAUD_CODEX')?.trim();
   return !!v && !/^(1|true|yes|sim|on)$/i.test(v);
 }
 
@@ -314,9 +323,9 @@ export function antigravityAccountsPayload(mounts: AccountMount[]): AccountPaylo
   });
 }
 
-/** HABBLAUD_ANTIGRAVITY (ou HABBLAUD_AGY) desligado (0, false, off, no) no ambiente de quem roda o docker:up. */
-export function antigravityDisabled(env: NodeJS.ProcessEnv): boolean {
-  const v = (env.HABBLAUD_ANTIGRAVITY ?? env.HABBLAUD_AGY)?.trim();
+/** HABBLAUD_ANTIGRAVITY (ou HABBLAUD_AGY) desligado (0, false, off, no) no ambiente ou .env de quem roda o docker:up. */
+export function antigravityDisabled(env: NodeJS.ProcessEnv, envFile = ''): boolean {
+  const v = envOrFile(env, envFile, 'HABBLAUD_ANTIGRAVITY', 'HABBLAUD_AGY')?.trim();
   return !!v && !/^(1|true|yes|sim|on)$/i.test(v);
 }
 
@@ -349,9 +358,9 @@ export function piAccountsPayload(mounts: AccountMount[]): AccountPayload[] {
   }));
 }
 
-/** HABBLAUD_PI desligado (0, false, off, no) no ambiente de quem roda o docker:up. */
-export function piDisabled(env: NodeJS.ProcessEnv): boolean {
-  const v = env.HABBLAUD_PI?.trim();
+/** HABBLAUD_PI desligado (0, false, off, no) no ambiente ou .env de quem roda o docker:up. */
+export function piDisabled(env: NodeJS.ProcessEnv, envFile = ''): boolean {
+  const v = envOrFile(env, envFile, 'HABBLAUD_PI')?.trim();
   return !!v && !/^(1|true|yes|sim|on)$/i.test(v);
 }
 
@@ -810,8 +819,9 @@ async function up(opts: Options, port: number): Promise<void> {
   }
   // Pasta do Codex (CODEX_HOME) listada ou achada como se fosse do Claude Code: não é montada como conta do Claude.
   // Ela entra (só as conversas e os locks) como conta do Codex, logo abaixo.
+  const envFile = readEnvFile();
   const claudeRefused = codexDirsRefused(process.env, HOME);
-  const codexDirs = codexDisabled(process.env) ? [] : discoverCodexDirs(process.env, HOME);
+  const codexDirs = codexDisabled(process.env, envFile) ? [] : discoverCodexDirs(process.env, HOME);
   for (const dir of claudeRefused) if (!codexDirs.includes(dir)) warn(tr('{0} é uma pasta do Codex, não do Claude Code; conta ignorada.', [tildify(dir)]));
   const takenShorts = accounts.map((a) => a.short);
   const takenColors = accounts.map((a) => a.color);
@@ -831,7 +841,7 @@ async function up(opts: Options, port: number): Promise<void> {
   takenShorts.push(...codexAccounts.map((a) => a.short));
   takenColors.push(...codexAccounts.map((a) => a.color));
 
-  const antigravityDirs = antigravityDisabled(process.env) ? [] : discoverAntigravityDirs(process.env, HOME);
+  const antigravityDirs = antigravityDisabled(process.env, envFile) ? [] : discoverAntigravityDirs(process.env, HOME);
   const antigravityAccounts = detectAntigravityAccounts(antigravityDirs, {
     home: HOME,
     env: process.env,
@@ -845,7 +855,7 @@ async function up(opts: Options, port: number): Promise<void> {
   takenShorts.push(...antigravityAccounts.map((a) => a.short));
   takenColors.push(...antigravityAccounts.map((a) => a.color));
 
-  const piDirs = piDisabled(process.env) ? [] : discoverPiDirs(process.env, HOME);
+  const piDirs = piDisabled(process.env, envFile) ? [] : discoverPiDirs(process.env, HOME);
   const piAccounts = detectPiAccounts(piDirs, {
     home: HOME,
     env: process.env,

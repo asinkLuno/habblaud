@@ -87,7 +87,7 @@ export function planUninstall(file: Settings): PlanAction {
 
 export function hooksFilePath(home: string, env: NodeJS.ProcessEnv = process.env): string {
   const custom = env.HABBLAUD_ANTIGRAVITY_HOOKS_FILE?.trim();
-  if (custom) return resolve(custom);
+  if (custom) return resolve(custom.replace(/^~(?=[\\/]|$)/, home));
   return join(home, '.gemini', 'config', 'hooks.json');
 }
 
@@ -142,9 +142,9 @@ function writeHookConfig(home: string, port: number): boolean {
 
 function defaultNodeProbe(bin: string | undefined): string | undefined {
   try {
-    if (bin) return execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3_000 }).trim();
+    if (bin) return execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3_000 }).trim().split('\n').pop()?.trim();
     const sh = process.env.SHELL || '/bin/sh';
-    return execFileSync(sh, ['-lc', 'node --version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3_000 }).trim();
+    return execFileSync(sh, ['-lc', 'node --version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3_000 }).trim().split('\n').pop()?.trim();
   } catch {
     return undefined;
   }
@@ -215,7 +215,6 @@ export async function run(opts: RunOptions, ctx: RunContext): Promise<number> {
       throw new FatalError(tr('--node {0} não é um Node {1}+ ({2}).', [opts.node, MIN_NODE_MAJOR, nodeChoice.chosen ?? tr('não executou')]));
     }
     const plan = planInstall(read.settings, cmd);
-    if (!opts.dryRun) writeHookConfig(ctx.home, opts.port);
     if (plan.action === 'none') {
       say(`${tildify(file, ctx.home)}: ${plan.message}.`);
     } else if (opts.dryRun) {
@@ -225,6 +224,7 @@ export async function run(opts: RunOptions, ctx: RunContext): Promise<number> {
       const backup = writeSettings(file, plan.file, read.raw, ctx.now);
       say(`${tildify(file, ctx.home)}: ${plan.message}${backup ? tr(' (backup em {0})', [tildify(backup, ctx.home)]) : ''}.`);
     }
+    if (!opts.dryRun) writeHookConfig(ctx.home, opts.port);
     return runTap('install');
   }
 
@@ -266,4 +266,9 @@ async function main(): Promise<void> {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) void main();
+if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? '')).href) {
+  main().catch((err) => {
+    console.error(`[antigravity] ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  });
+}

@@ -203,10 +203,14 @@ describe('docker-up', () => {
     expect(antigravityDisabled({ HABBLAUD_AGY: 'off' })).toBe(true);
     expect(antigravityDisabled({ HABBLAUD_ANTIGRAVITY: '1', HABBLAUD_AGY: '0' })).toBe(false);
     expect(antigravityDisabled({})).toBe(false);
+    expect(antigravityDisabled({}, 'HABBLAUD_ANTIGRAVITY=0\n')).toBe(true);
+    expect(antigravityDisabled({ HABBLAUD_ANTIGRAVITY: '1' }, 'HABBLAUD_ANTIGRAVITY=0\n')).toBe(false);
     expect(piDisabled({ HABBLAUD_PI: '0' })).toBe(true);
     expect(piDisabled({ HABBLAUD_PI: 'false' })).toBe(true);
     expect(piDisabled({ HABBLAUD_PI: '1' })).toBe(false);
     expect(piDisabled({})).toBe(false);
+    expect(piDisabled({}, 'HABBLAUD_PI=0\n')).toBe(true);
+    expect(codexDisabled({}, 'HABBLAUD_CODEX=0\n')).toBe(true);
   });
 
   it('fuso do host vai para o container como TZ', () => {
