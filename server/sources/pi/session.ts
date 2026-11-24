@@ -371,11 +371,7 @@ export function parsePiLine(state: PiState, raw: string, ctx: PiParseContext): P
 
         const stopReason = str(msg.stopReason);
         const durationMs = num(msg.durationMs);
-        if (stopReason === 'toolUse' || hasToolCalls) {
-          res.status = 'working';
-          res.statusAt = at;
-          state.lastStatus = 'working';
-        } else if (stopReason === 'aborted') {
+        if (stopReason === 'aborted') {
           if (state.shells.size) {
             state.shells.clear();
             res.shellsChanged = true;
@@ -394,6 +390,10 @@ export function parsePiLine(state: PiState, raw: string, ctx: PiParseContext): P
           res.status = 'idle';
           res.statusAt = at;
           state.lastStatus = 'idle';
+        } else if (stopReason === 'toolUse' || hasToolCalls) {
+          res.status = 'working';
+          res.statusAt = at;
+          state.lastStatus = 'working';
         } else if (stopReason === 'stop') {
           if (state.shells.size) {
             state.shells.clear();

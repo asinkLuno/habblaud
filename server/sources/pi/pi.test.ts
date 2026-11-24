@@ -319,4 +319,86 @@ describe('PiSource (arquivos + extensão ao vivo) e PiHistory', () => {
 
     source.stop();
   });
+
+  it('descobre pasta do Pi mesmo com auth.json presente e rejeita sessionFile arbitrário (auth.json)', () => {
+    const home = makeTmp();
+    const dataDir = makeTmp();
+    const { piDir, sessionId, cwd } = makePiTree(home);
+    const authFile = join(piDir, 'auth.json');
+    writeFileSync(authFile, '{"token":"secret"}\n');
+
+    expect(discoverPiDirs({ HOME: home }, home)).toEqual([piDir]);
+
+    const now = () => 1_795_500_000_000;
+    const accounts = new AccountsService({ dirs: [], home, env: {}, onChange: () => {}, now });
+    const office = makeOffice(dataDir, accounts, now);
+    const source = new PiSource({ accounts, office, dirs: [piDir], home, env: {}, now, watch: false, pollMs: 60_000 });
+
+    expect(
+      source.applyLiveEvent('.pi', {
+        type: 'session_start',
+        sessionId,
+        cwd,
+        piDir,
+        sessionFile: authFile,
+        sessionName: 'chave sk-ant-api03-123456789012345678901234567890',
+        idle: false,
+      }),
+    ).toBe(true);
+    // auth.json fora de sessions/ jamais é aceito como transcript
+    expect(source.transcriptPathOf(`.pi:${sessionId}`)).toBeUndefined();
+    // sessionName é mascarado
+    expect(office.get(`.pi:${sessionId}`)?.title ?? '').not.toContain('sk-ant-api03');
+    source.stop();
+  });
+
+  it('poll não ressuscita sessão working fechada, heartbeat idle destrava working e stopReason aborted vence toolCall parcial', () => {
+    const state = createPiState();
+    const aborted = parsePiLine(
+      state,
+      JSON.stringify({
+        type: 'message',
+        id: 'm-abort',
+        timestamp: '2026-11-24T05:00:00Z',
+        message: {
+          role: 'assistant',
+          stopReason: 'aborted',
+          content: [{ type: 'toolCall', id: 'tc1', name: 'bash', arguments: { command: 'sleep 10' } }],
+        },
+      }),
+      { idPrefix: '.pi:s1', now: 1_000 },
+    );
+    expect(aborted.status).toBe('idle');
+    expect(state.shells.size).toBe(0);
+
+    const home = makeTmp();
+    const dataDir = makeTmp();
+    const { piDir, cwd } = makePiTree(home);
+    let clock = 1_795_500_000_000;
+    const now = () => clock;
+    const accounts = new AccountsService({ dirs: [], home, env: {}, onChange: () => {}, now });
+    const office = makeOffice(dataDir, accounts, now);
+    const source = new PiSource({ accounts, office, dirs: [piDir], home, env: {}, now, watch: false, pollMs: 60_000 });
+    const sid = 'sess-quiet-1';
+    const id = `.pi:${sid}`;
+
+    source.applyLiveEvent('.pi', { type: 'before_agent_start', sessionId: sid, cwd, piDir, prompt: 'Rodar' });
+    expect(office.get(id)?.status).toBe('working');
+
+    // Heartbeat com idle=true após >5s recupera de agent_end perdido
+    clock += 10_000;
+    source.applyLiveEvent('.pi', { type: 'heartbeat', sessionId: sid, cwd, piDir, idle: true });
+    expect(office.get(id)?.status).toBe('idle');
+
+    // Volta para working, expira presença live + quiet > 30min -> fecha sem ressuscitar como idle
+    clock += 1_000;
+    source.applyLiveEvent('.pi', { type: 'agent_start', sessionId: sid, cwd, piDir });
+    expect(office.get(id)?.status).toBe('working');
+    clock += 31 * 60_000;
+    source.poll(false); // marca missingSince
+    clock += 2_000;
+    source.poll(false); // fecha sessão (CLOSE_AFTER_MISSING_MS)
+    expect(office.get(id)?.status).toBe('offline');
+    source.stop();
+  });
 });

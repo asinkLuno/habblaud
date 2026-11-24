@@ -132,6 +132,7 @@ export class PiSessionIndex {
 
   private scan(now: number): void {
     this.scannedAt = now;
+    const best = new Map<string, { path: string; mtimeMs: number }>();
     for (const dir of piSessionDirs(this.agentDir)) {
       let names: string[];
       try {
@@ -142,8 +143,18 @@ export class PiSessionIndex {
       for (const name of names) {
         const parsed = parsePiSessionName(name);
         if (!parsed) continue;
-        this.byId.set(parsed.sessionId, join(dir, name));
+        const path = join(dir, name);
+        try {
+          const st = statSync(path);
+          if (!st.isFile()) continue;
+          const prev = best.get(parsed.sessionId);
+          if (!prev || st.mtimeMs > prev.mtimeMs) best.set(parsed.sessionId, { path, mtimeMs: st.mtimeMs });
+        } catch {
+          // arquivo sumiu durante a varredura
+        }
       }
     }
+    this.byId.clear();
+    for (const [id, entry] of best) this.byId.set(id, entry.path);
   }
 }

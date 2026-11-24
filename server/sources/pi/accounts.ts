@@ -10,8 +10,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 import {
   ACCOUNT_COLORS,
   expandHome,
-  isCodexHome,
+  isPiDir,
   parseAccountOverrides,
+  readShellAliases,
+  shortcutsByDir,
   type AccountOverride,
   type DetectedAccount,
 } from '../../accounts/detect';
@@ -31,43 +33,17 @@ function isDir(p: string): boolean {
   }
 }
 
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v.trim() : undefined;
 }
 
-/** Subpasta de sessões do Pi: `--encoded-path--`. */
-const PI_PROJECT_DIR = /^--.*--$/;
-
 /**
  * A pasta é um diretório do agente Pi (ex.: ~/.pi/agent)?
- * Nunca confunde com Claude Code (`projects/`) nem Codex (`thread-writer-locks/`, `config.toml`, `sessions/AAAA/`).
+ * Reutiliza `isPiDir` como fonte única: reconhece `sessions/--...--/`, `models.json` ou `extensions/` (mesmo com
+ * `auth.json` presente) sem confundir com Claude Code (`projects/`) nem Codex (`config.toml`, `thread-writer-locks/`).
  */
 export function isPiAgentDir(p: string): boolean {
-  if (!isDir(p)) return false;
-  if (isDir(join(p, 'projects'))) return false;
-  if (isDir(join(p, 'thread-writer-locks')) || isFile(join(p, 'config.toml'))) return false;
-  const sessions = join(p, 'sessions');
-  if (isDir(sessions)) {
-    try {
-      const ents = readdirSync(sessions, { withFileTypes: true });
-      if (ents.some((e) => e.isDirectory() && PI_PROJECT_DIR.test(e.name))) return true;
-      // Pasta de sessões vazia + marcadores típicos do Pi (models.json, settings.json, extensions/)
-      if (isFile(join(p, 'models.json')) || isFile(join(p, 'settings.json')) || isDir(join(p, 'extensions'))) {
-        if (!isCodexHome(p)) return true;
-      }
-    } catch {
-      // sessions ilegível
-    }
-  }
-  return (isFile(join(p, 'models.json')) || isDir(join(p, 'extensions'))) && !isCodexHome(p);
+  return isDir(p) && isPiDir(p);
 }
 
 /** Pasta padrão do agente Pi: PI_CODING_AGENT_DIR ou $HOME/.pi/agent. */
@@ -162,16 +138,19 @@ export function detectPiAccounts(dirs: string[], opts: PiDetectOptions = {}): De
   const env = opts.env ?? process.env;
   const home = opts.home ?? (env.HOME || homedir());
   const overrides = piOverrides(env.HABBLAUD_ACCOUNTS);
+  const aliases = shortcutsByDir(readShellAliases(home, 'pi'), home, defaultPiAgentDir(env, home));
   const ids = uniquePiIds(dirs);
   const usedShorts = new Set([...(opts.taken?.shorts ?? [])].map((s) => s.toUpperCase()));
   const usedColors = new Set(opts.taken?.colors ?? []);
 
   const partial = dirs.map((dir, i) => {
-    const ov = matchOverride(overrides, ids[i], resolve(dir), home);
-    const short = str(ov?.short)?.slice(0, 3);
-    return { dir, id: str(ov?.id) ?? ids[i], ov, short: short && !usedShorts.has(short.toUpperCase()) ? short : undefined };
+    const abs = resolve(dir);
+    const ov = matchOverride(overrides, ids[i], abs, home);
+    const candShort = str(ov?.short)?.slice(0, 3) ?? aliases.get(abs)?.slice(0, 3);
+    const short = candShort && !usedShorts.has(candShort.toUpperCase()) ? candShort : undefined;
+    if (short) usedShorts.add(short.toUpperCase());
+    return { dir, id: str(ov?.id) ?? ids[i], ov, short };
   });
-  for (const p of partial) if (p.short) usedShorts.add(p.short.toUpperCase());
 
   return partial.map((p) => {
     const short = p.short ?? letterCandidates(p.id).find((l) => !usedShorts.has(l)) ?? 'P';
@@ -179,8 +158,9 @@ export function detectPiAccounts(dirs: string[], opts: PiDetectOptions = {}): De
     let color = str(p.ov?.color);
     if (!color) {
       color = ACCOUNT_COLORS.find((c) => !usedColors.has(c)) ?? ACCOUNT_COLORS[usedColors.size % ACCOUNT_COLORS.length];
-      usedColors.add(color);
     }
+    usedColors.add(color);
+    const plan = str(p.ov?.plan);
     return {
       id: p.id,
       provider: 'pi',
@@ -188,6 +168,7 @@ export function detectPiAccounts(dirs: string[], opts: PiDetectOptions = {}): De
       short,
       name: str(p.ov?.name) ?? (dirs.length > 1 ? `Pi ${short}` : 'Pi'),
       color,
+      ...(plan ? { plan } : {}),
     };
   });
 }

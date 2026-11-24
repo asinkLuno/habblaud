@@ -9,7 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 interface PiSessionManagerLike {
   getSessionId(): string;
@@ -27,7 +27,7 @@ interface PiContextLike {
 
 interface PiApiLike {
   on(event: string, handler: (event: any, ctx: PiContextLike) => any): () => void;
-  sendUserMessage?(content: string, options?: { deliverAs?: 'steer' | 'followUp' }): void;
+  sendUserMessage?(content: string, options?: { deliverAs?: 'steer' | 'followUp' }): void | Promise<void>;
   getSessionName?(): string | undefined;
 }
 
@@ -37,24 +37,40 @@ const SHUTDOWN_TIMEOUT_MS = 800;
 const HEARTBEAT_MS = 25_000;
 const INBOX_POLL_MS = 2_500;
 const MAX_ARG_STR = 600;
+const MAX_ARG_KEYS = 40;
 const MAX_PROMPT_STR = 1_000;
+const MAX_BODY_BYTES = 200_000;
+
+function homeDir(): string {
+  return process.env.HOME || homedir();
+}
+
+function expandHome(p: string): string {
+  return resolve(p.trim().replace(/^~(?=[\\/]|$)/, homeDir()));
+}
+
+function validPort(p: number): boolean {
+  return Number.isInteger(p) && p > 0 && p < 65536;
+}
 
 function readPort(): number {
-  const fromEnv = Number.parseInt(process.env.HABBLAUD_PI_PORT ?? process.env.HABBLAUD_PORT ?? '', 10);
-  if (Number.isFinite(fromEnv) && fromEnv > 0 && fromEnv < 65536) return fromEnv;
+  const fromPiEnv = Number.parseInt(process.env.HABBLAUD_PI_PORT ?? '', 10);
+  if (validPort(fromPiEnv)) return fromPiEnv;
   try {
-    const raw = readFileSync(join(homedir(), '.habblaud', 'pi-extension.json'), 'utf8');
+    const raw = readFileSync(join(homeDir(), '.habblaud', 'pi-extension.json'), 'utf8');
     const cfg = JSON.parse(raw) as { port?: unknown };
-    if (typeof cfg.port === 'number' && cfg.port > 0 && cfg.port < 65536) return cfg.port;
+    if (typeof cfg.port === 'number' && validPort(cfg.port)) return cfg.port;
   } catch {
-    // usa porta padrão
+    // usa variável genérica ou padrão
   }
+  const fromEnv = Number.parseInt(process.env.HABBLAUD_PORT ?? '', 10);
+  if (validPort(fromEnv)) return fromEnv;
   return DEFAULT_PORT;
 }
 
 function detectPiDir(ctx: PiContextLike): string {
   const envDir = process.env.PI_CODING_AGENT_DIR?.trim();
-  if (envDir) return resolve(envDir);
+  if (envDir) return expandHome(envDir);
   try {
     const sdir = ctx.sessionManager.getSessionDir();
     // <piDir>/sessions/<encoded-cwd> -> volta dois níveis
@@ -62,7 +78,17 @@ function detectPiDir(ctx: PiContextLike): string {
   } catch {
     // cai no padrão
   }
-  return join(homedir(), '.pi', 'agent');
+  return join(homeDir(), '.pi', 'agent');
+}
+
+function piAccountId(dir: string): string {
+  const abs = resolve(dir);
+  const base = basename(abs);
+  if (base === 'agent') {
+    const parent = basename(dirname(abs));
+    if (parent && parent !== '/' && parent !== '.') return parent;
+  }
+  return base || '.pi';
 }
 
 function trimString(v: unknown, max: number): string | undefined {
@@ -73,9 +99,16 @@ function trimString(v: unknown, max: number): string | undefined {
 function trimArgs(raw: unknown): Record<string, unknown> | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const out: Record<string, unknown> = {};
+  let count = 0;
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === 'string') out[k] = trimString(v, MAX_ARG_STR);
-    else if (typeof v === 'number' || typeof v === 'boolean') out[k] = v;
+    if (count >= MAX_ARG_KEYS) break;
+    if (typeof v === 'string') {
+      out[k] = trimString(v, MAX_ARG_STR);
+      count++;
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      out[k] = v;
+      count++;
+    }
   }
   return out;
 }
@@ -115,34 +148,50 @@ export default function habblaudExtension(pi: PiApiLike): void {
     }
   };
 
+  const drainBody = async (res: Response | undefined): Promise<void> => {
+    try {
+      await res?.body?.cancel();
+    } catch {
+      // ignora
+    }
+  };
+
   const sendEvent = (ctx: PiContextLike, type: string, extra: Record<string, unknown> = {}, timeoutMs = EVENT_TIMEOUT_MS): Promise<void> => {
     lastCtx = ctx;
     const meta = sessionMeta(ctx);
     if (!meta.sessionId) return Promise.resolve();
     const { piDir, ...eventMeta } = meta;
-    return postJson(
-      '/api/pi/events',
-      {
-        piDir,
-        event: {
-          type,
-          ...eventMeta,
-          idle: ctx.isIdle(),
-          ...extra,
-        },
+    const definedExtra: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(extra)) if (v !== undefined) definedExtra[k] = v;
+    const payload: Record<string, unknown> = {
+      piDir,
+      event: {
+        type,
+        ...eventMeta,
+        idle: ctx.isIdle(),
+        ...definedExtra,
       },
-      timeoutMs,
-    ).then(() => undefined);
+    };
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > MAX_BODY_BYTES) {
+      const ev = payload.event as Record<string, unknown>;
+      delete ev.args;
+      delete ev.prompt;
+    }
+    return postJson('/api/pi/events', payload, timeoutMs).then(drainBody);
   };
 
   const pollInbox = async (): Promise<void> => {
     if (inboxBusy || !lastCtx || !pi.sendUserMessage) return;
     const session = lastCtx.sessionManager.getSessionId();
     if (!session) return;
+    const account = piAccountId(detectPiDir(lastCtx));
     inboxBusy = true;
     try {
-      const res = await postJson('/api/mod/inbox', { session });
-      if (!res || !res.ok) return;
+      const res = await postJson('/api/mod/inbox', { session, account });
+      if (!res || !res.ok) {
+        await drainBody(res);
+        return;
+      }
       const data = (await res.json()) as { messages?: Array<{ id: string; text: string }> };
       const msgs = Array.isArray(data?.messages) ? data.messages : [];
       if (!msgs.length) return;
@@ -150,13 +199,13 @@ export default function habblaudExtension(pi: PiApiLike): void {
       for (const m of msgs) {
         if (!m || typeof m.id !== 'string' || typeof m.text !== 'string') continue;
         try {
-          pi.sendUserMessage(m.text, { deliverAs: 'followUp' });
+          await pi.sendUserMessage(m.text, { deliverAs: 'followUp' });
           results.push({ id: m.id, ok: true });
         } catch (err) {
           results.push({ id: m.id, ok: false, error: err instanceof Error ? err.message : String(err) });
         }
       }
-      if (results.length) await postJson('/api/mod/inbox/ack', { session, results });
+      if (results.length) await drainBody(await postJson('/api/mod/inbox/ack', { session, account, results }));
     } catch {
       // ignora quando Habblaud não está rodando ou mensagens estão desligadas
     } finally {

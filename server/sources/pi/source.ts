@@ -8,9 +8,9 @@
 // - sem extensão (somente arquivos): qualquer `.jsonl` modificado nos últimos FALLBACK_RECENT_MS (30 min)
 //   entra no escritório e é acompanhado ao vivo com FileTail.
 import { createReadStream, existsSync, realpathSync, statSync, watch, type FSWatcher } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import type { Activity, AgentStatus, SourceInfo } from '../../../shared/types';
-import { describePrompt, describeShellJob, SPECIAL } from '../../../shared/activity';
+import { describePrompt, describeShellJob, maskSecrets, SPECIAL, truncate } from '../../../shared/activity';
 import type { AccountEntry, AccountsService } from '../../accounts/service';
 import { errMsg, log } from '../../log';
 import type { Office, TranscriptSummary } from '../../model/office';
@@ -18,7 +18,7 @@ import type { AgentSource } from '../source';
 import { FileTail, LineBuffer, warnOversizedLine } from '../tail';
 import type { TerminalParser } from '../terminal';
 import { detectPiAccounts } from './accounts';
-import { isPiSessionId, PI_SESSIONS_DIR, PiSessionIndex, readPiHeader } from './files';
+import { isPiSessionId, parsePiSessionName, PI_SESSIONS_DIR, PiSessionIndex, readPiHeader } from './files';
 import type { PiLive } from './live';
 import { createPiState, describePiTool, parsePiLine, piTitleFromPrompt, type PiState } from './session';
 import { createPiTerminalParser } from './terminal';
@@ -86,15 +86,15 @@ interface TrackedSession {
   waitingFor?: string;
   /** Última vez que um evento ao vivo/heartbeat da extensão confirmou presença. */
   liveSeenAt: number;
-  /** Última escrita vista no arquivo ou evento ao vivo. */
+  /** Última escrita vista no arquivo ou evento ao vivo de atividade real (heartbeats não contam). */
   lastActivityAt: number;
-  /** Se a extensão mandou `session_shutdown` (não reabre só pelo mtime antigo). */
-  shutdownAt?: number;
   /** Quando deixou de ser visto ativo. */
   missingSince?: number;
   /** Leitura do começo do arquivo em segundo plano já iniciada. */
   prefixStarted?: boolean;
 }
+
+const MAX_TITLE = 90;
 
 export class PiSource implements AgentSource, PiLive {
   readonly provider = 'pi' as const;
@@ -106,6 +106,8 @@ export class PiSource implements AgentSource, PiLive {
   private readonly sessions = new Map<string, TrackedSession>();
   private readonly shutdownHistory = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  private kick: ReturnType<typeof setTimeout> | null = null;
+  private lastPollAt = 0;
   private stopped = false;
 
   constructor(private readonly opts: PiSourceOptions) {
@@ -140,6 +142,7 @@ export class PiSource implements AgentSource, PiLive {
   }
 
   start(): void {
+    this.stop();
     this.stopped = false;
     this.opts.office.beginBoot();
     try {
@@ -164,6 +167,10 @@ export class PiSource implements AgentSource, PiLive {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.kick) {
+      clearTimeout(this.kick);
+      this.kick = null;
+    }
     for (const acc of this.accountsList) {
       try {
         acc.watcher?.close();
@@ -172,6 +179,21 @@ export class PiSource implements AgentSource, PiLive {
       }
       acc.watcher = undefined;
     }
+  }
+
+  private schedule(): void {
+    if (this.kick || this.stopped) return;
+    const wait = Math.max(60, 150 - (this.now() - this.lastPollAt));
+    this.kick = setTimeout(() => {
+      this.kick = null;
+      if (this.stopped) return;
+      try {
+        this.poll(false);
+      } catch (err) {
+        log.warnOnce(`pi-poll:${errMsg(err)}`, tr('Pi: falha ao atualizar sessões ({0}).', [errMsg(err)]));
+      }
+    }, wait);
+    this.kick.unref?.();
   }
 
   sources(): SourceInfo[] {
@@ -191,21 +213,30 @@ export class PiSource implements AgentSource, PiLive {
 
   transcriptPathOf(agentId: string): string | undefined {
     const s = this.sessions.get(agentId);
-    if (!s) return undefined;
+    if (!s?.added) return undefined;
     if (s.path) return s.path;
     const found = s.account.index.find(s.sessionId, this.now());
     if (found) s.path = found;
     return found;
   }
 
-  terminalParser(): TerminalParser {
-    return createPiTerminalParser();
+  terminalParser(agentId: string): TerminalParser | undefined {
+    return this.sessions.has(agentId) ? createPiTerminalParser() : undefined;
   }
 
   // ---------------------------------------------------------------- eventos ao vivo da extensão
 
   applyLiveEvent(accountId: string | undefined, input: Record<string, unknown>): boolean {
     if (this.stopped) return false;
+    try {
+      return this.handleLiveEvent(accountId, input);
+    } catch (err) {
+      log.warnOnce(`pi-live:${errMsg(err)}`, tr('Pi: falha ao atualizar sessões ({0}).', [errMsg(err)]));
+      return false;
+    }
+  }
+
+  private handleLiveEvent(accountId: string | undefined, input: Record<string, unknown>): boolean {
     const type = str(input.type);
     const sessionId = str(input.sessionId);
     if (!type || !sessionId || !isPiSessionId(sessionId)) return false;
@@ -220,22 +251,19 @@ export class PiSource implements AgentSource, PiLive {
     if (type === 'session_shutdown') {
       this.shutdownHistory.set(id, now);
       const existing = this.sessions.get(id);
-      if (existing) {
-        existing.shutdownAt = now;
-        this.closeSession(existing);
-      }
+      if (existing) this.closeSession(existing);
       return true;
     }
 
     // Novo evento de vida cancela shutdown anterior (ex.: sessão retomada com /resume).
     this.shutdownHistory.delete(id);
 
-    const sessionFile = this.resolveSessionFile(acc, rawSessionFile);
+    const sessionFile = this.resolveSessionFile(acc, sessionId, rawSessionFile);
     const cwd = str(input.cwd);
     const s = this.getOrCreate(acc, sessionId, sessionFile, cwd, now);
+    if (s.added && !this.opts.office.has(s.id)) s.added = false;
     s.liveSeenAt = now;
     s.missingSince = undefined;
-    s.shutdownAt = undefined;
     if (cwd && !s.cwd) {
       s.cwd = cwd;
       s.state.meta.cwd = cwd;
@@ -249,10 +277,13 @@ export class PiSource implements AgentSource, PiLive {
     if (model && model !== s.state.model) {
       s.state.model = model;
     }
-    const sessionName = str(input.sessionName);
-    if (sessionName && sessionName !== s.state.explicitTitle) {
-      s.state.explicitTitle = sessionName;
-      s.state.title = sessionName;
+    const rawSessionName = str(input.sessionName);
+    if (rawSessionName) {
+      const cleanName = truncate(maskSecrets(rawSessionName.slice(0, 1_000)), MAX_TITLE);
+      if (cleanName && cleanName !== s.state.explicitTitle) {
+        s.state.explicitTitle = cleanName;
+        s.state.title = cleanName;
+      }
     }
 
     switch (type) {
@@ -262,6 +293,14 @@ export class PiSource implements AgentSource, PiLive {
         if (!s.added) {
           this.ensureAdded(s, idle ? 'idle' : 'working', now, false);
         } else {
+          // Heartbeat informando que o Pi está ocioso recupera de um agent_end perdido.
+          if (type === 'heartbeat' && idle && s.status === 'working' && now - s.lastActivityAt > 5_000) {
+            if (s.state.shells.size) {
+              s.state.shells.clear();
+              this.opts.office.setShells(s.id, []);
+            }
+            this.applyStatus(s, 'idle', now);
+          }
           this.pushSummary(s);
         }
         // Drena o arquivo se já existir (ex.: sessão retomada).
@@ -277,7 +316,7 @@ export class PiSource implements AgentSource, PiLive {
         }
         this.ensureAdded(s, 'working', now, false);
         this.applyStatus(s, 'working', now);
-        if (prompt) {
+        if (prompt && s.added) {
           const act: Activity = { id: `${s.id}:live-u:${now}`, ...describePrompt(prompt), at: now };
           this.opts.office.addActivity(s.id, act, true);
         }
@@ -300,13 +339,15 @@ export class PiSource implements AgentSource, PiLive {
         const toolName = str(input.toolName) ?? 'tool';
         const callId = str(input.toolCallId) ?? `${now}`;
         const args = rec(input.args) ?? {};
-        const act: Activity = {
-          id: `${s.id}:tool:${callId}`,
-          ...describePiTool(toolName, args),
-          tool: toolName,
-          at: now,
-        };
-        this.opts.office.addActivity(s.id, act, true);
+        if (s.added) {
+          const act: Activity = {
+            id: `${s.id}:tool:${callId}`,
+            ...describePiTool(toolName, args),
+            tool: toolName,
+            at: now,
+          };
+          this.opts.office.addActivity(s.id, act, true);
+        }
         const lower = toolName.toLowerCase();
         if (lower === 'bash' || lower === 'powershell' || lower === 'shell') {
           const info = describeShellJob('Bash', { command: args.command ?? args.cmd ?? '', description: args.description });
@@ -318,7 +359,7 @@ export class PiSource implements AgentSource, PiLive {
             background: false,
             kind: 'shell',
           });
-          this.opts.office.setShells(s.id, [...s.state.shells.values()]);
+          if (s.added) this.opts.office.setShells(s.id, [...s.state.shells.values()]);
         }
         return true;
       }
@@ -399,33 +440,40 @@ export class PiSource implements AgentSource, PiLive {
   // ---------------------------------------------------------------- varredura / acompanhamento
 
   private setupWatchers(): void {
+    if (this.stopped || !this.useWatch) return;
     for (const acc of this.accountsList) {
+      if (acc.watcher) continue;
       const sessionsDir = join(acc.dir, PI_SESSIONS_DIR);
       if (!existsSync(sessionsDir)) continue;
       try {
-        acc.watcher = watch(sessionsDir, { recursive: true }, () => {
-          if (this.stopped) return;
-          try {
-            this.poll(false);
-          } catch {
-            // próximo poll recupera
-          }
+        const w = watch(sessionsDir, { recursive: true, persistent: false }, () => {
+          this.schedule();
         });
-        acc.watcher.on('error', () => {
-          // polling continua funcionando mesmo sem fs.watch
+        w.on('error', () => {
+          w.close();
+          if (acc.watcher === w) acc.watcher = undefined;
         });
+        acc.watcher = w;
       } catch {
         // recursive watch indisponível neste FS: fica só no polling
       }
     }
   }
 
-  private poll(boot: boolean): void {
-    const now = this.now();
+  poll(boot = false): void {
+    const now = (this.lastPollAt = this.now());
     const activeIds = new Set<string>();
+
+    // Remove entradas antigas do histórico de encerramento para não vazar memória.
+    for (const [id, shutAt] of this.shutdownHistory) {
+      if (now - shutAt > PI_FALLBACK_RECENT_MS) this.shutdownHistory.delete(id);
+    }
+
+    if (this.useWatch) this.setupWatchers();
 
     for (const acc of this.accountsList) {
       acc.ok = existsSync(acc.dir);
+      acc.error = acc.ok ? undefined : tr('pasta não encontrada: {0}', [acc.configDir]);
       const recent = acc.index.listRecent(now, PI_FALLBACK_RECENT_MS);
       for (const file of recent) {
         const id = `${acc.id}:${file.sessionId}`;
@@ -436,6 +484,7 @@ export class PiSource implements AgentSource, PiLive {
 
         activeIds.add(id);
         const s = this.getOrCreate(acc, file.sessionId, file.path, undefined, now);
+        if (s.added && !this.opts.office.has(s.id)) s.added = false;
         s.path = file.path;
         s.missingSince = undefined;
         this.drainFile(s, boot);
@@ -443,24 +492,29 @@ export class PiSource implements AgentSource, PiLive {
     }
 
     // Mantém também sessões vivas via extensão (mesmo antes de gravar a 1ª linha ou ociosas há > 30 min).
-    for (const s of this.sessions.values()) {
+    for (const s of [...this.sessions.values()]) {
+      if (s.added && !this.opts.office.has(s.id)) s.added = false;
       if (s.liveSeenAt > 0 && now - s.liveSeenAt <= PI_LIVE_PRESENCE_MS) {
         activeIds.add(s.id);
         s.missingSince = undefined;
         if (s.path) this.drainFile(s, boot);
       } else if (!activeIds.has(s.id)) {
         if (s.missingSince === undefined) s.missingSince = now;
-        if (now - s.missingSince >= CLOSE_AFTER_MISSING_MS) this.closeSession(s);
+        if (now - s.missingSince >= CLOSE_AFTER_MISSING_MS) {
+          this.closeSession(s);
+          continue;
+        }
       }
 
-      // Sessão presa em 'working' sem nenhuma escrita nem evento há 30 min → idle.
-      if (s.added && s.status === 'working' && now - Math.max(s.lastActivityAt, s.liveSeenAt) > PI_WORKING_QUIET_MS) {
+      // Sessão presa em 'working' sem nenhuma escrita nem atividade real há 30 min → idle.
+      if (s.added && s.status === 'working' && now - s.lastActivityAt > PI_WORKING_QUIET_MS) {
         if (s.state.shells.size) {
           s.state.shells.clear();
           this.opts.office.setShells(s.id, []);
         }
         this.applyStatus(s, 'idle', now);
       }
+      if (s.added) this.opts.office.fillWorkingActivity(s.id);
     }
   }
 
@@ -496,9 +550,10 @@ export class PiSource implements AgentSource, PiLive {
 
   /**
    * Traduz o `sessionFile` vindo da extensão no host para o caminho montado dentro do container (quando `acc.configDir`
-   * difere de `acc.dir`) e descarta caminhos fora de `acc.dir` ou inexistentes.
+   * difere de `acc.dir`) e exige que esteja dentro de `<acc.dir>/sessions/` com o mesmo `sessionId` (nunca aceita
+   * `auth.json` ou arquivos arbitrários).
    */
-  private resolveSessionFile(acc: PiAccount, raw: string | undefined): string | undefined {
+  private resolveSessionFile(acc: PiAccount, sessionId: string, raw: string | undefined): string | undefined {
     if (!raw) return undefined;
     const accDir = resolve(acc.dir);
     const accConfigDir = resolve(acc.configDir);
@@ -508,8 +563,10 @@ export class PiSource implements AgentSource, PiLive {
     }
     try {
       const real = realpathSync(candidate);
-      const root = realpathSync(accDir);
-      return real.startsWith(root + sep) ? real : undefined;
+      const sessionsRoot = realpathSync(join(accDir, PI_SESSIONS_DIR));
+      if (!real.startsWith(sessionsRoot + sep)) return undefined;
+      if (parsePiSessionName(basename(real))?.sessionId !== sessionId) return undefined;
+      return real;
     } catch {
       return undefined;
     }
@@ -572,64 +629,91 @@ export class PiSource implements AgentSource, PiLive {
       }
     }
 
-    const r = s.tail.read();
-    if (!r.lines.length && !r.reset) return;
-    const now = this.now();
-    isInitial = isInitial || r.reset;
-
-    let latestStatus: AgentStatus | undefined;
-    let latestStatusAt = 0;
-    let summaryChanged = false;
-    let shellsChanged = false;
-    const activities: Activity[] = [];
-
-    for (const line of r.lines) {
-      const parsed = parsePiLine(s.state, line, { idPrefix: s.id, now });
-      if (parsed.activities.length) activities.push(...parsed.activities);
-      if (parsed.status && (parsed.statusAt ?? now) >= latestStatusAt) {
-        latestStatus = parsed.status;
-        latestStatusAt = parsed.statusAt ?? now;
+    for (let iter = 0; iter < 8; iter++) {
+      let r;
+      try {
+        r = s.tail.read();
+      } catch (err) {
+        log.warnOnce(`pi-read:${s.id}`, tr('Pi: falha ao atualizar sessões ({0}).', [errMsg(err)]));
+        return;
       }
-      if (parsed.summaryChanged) summaryChanged = true;
-      if (parsed.shellsChanged) shellsChanged = true;
-    }
+      if (r.missing) {
+        s.tail = undefined;
+        s.path = undefined;
+        return;
+      }
+      if (r.reset) {
+        const meta = readPiHeader(s.path);
+        s.state = createPiState(meta);
+        if (s.cwd && !s.state.meta.cwd) s.state.meta.cwd = s.cwd;
+        s.prefixStarted = false;
+        isInitial = true;
+      }
+      if (!r.lines.length && !r.reset) return;
+      const now = this.now();
 
-    if (!s.cwd && s.state.meta.cwd) s.cwd = s.state.meta.cwd;
-    if (!s.cwd) return;
+      let latestStatus: AgentStatus | undefined;
+      let latestStatusAt = 0;
+      let summaryChanged = false;
+      let shellsChanged = false;
+      const activities: Activity[] = [];
 
-    const initialStatus: AgentStatus = latestStatus ?? s.state.lastStatus ?? 'idle';
-    this.ensureAdded(s, initialStatus, now, boot);
+      for (const line of r.lines) {
+        const parsed = parsePiLine(s.state, line, { idPrefix: s.id, now });
+        if (parsed.activities.length) activities.push(...parsed.activities);
+        if (parsed.status && (parsed.statusAt ?? now) >= latestStatusAt) {
+          latestStatus = parsed.status;
+          latestStatusAt = parsed.statusAt ?? now;
+        }
+        if (parsed.summaryChanged) summaryChanged = true;
+        if (parsed.shellsChanged) shellsChanged = true;
+      }
 
-    for (let i = 0; i < activities.length; i++) {
-      const act = activities[i];
-      const isLast = i === activities.length - 1;
-      // Na leitura inicial de arquivo já existente, entra só no histórico (não inunda o feed).
-      this.opts.office.addActivity(s.id, act, isLast, { feed: !isInitial && !boot });
-    }
+      if (!s.cwd && s.state.meta.cwd) s.cwd = s.state.meta.cwd;
+      if (!s.cwd) return;
 
-    if (latestStatus) {
-      // Só atualiza status se a linha for mais recente do que o último evento ao vivo.
-      this.applyStatus(s, latestStatus, latestStatusAt);
-    }
+      const initialStatus: AgentStatus = latestStatus ?? s.state.lastStatus ?? 'idle';
+      this.ensureAdded(s, initialStatus, now, boot, undefined, latestStatusAt || s.state.lastAt || 0);
 
-    if (shellsChanged) {
-      this.opts.office.setShells(s.id, [...s.state.shells.values()]);
-    }
-    if (summaryChanged || isInitial) {
-      this.pushSummary(s);
-    }
-    if (!isInitial) {
-      s.lastActivityAt = now;
-    } else if (s.state.lastAt) {
-      s.lastActivityAt = Math.max(s.lastActivityAt, s.state.lastAt);
+      for (let i = 0; i < activities.length; i++) {
+        const act = activities[i];
+        const isLast = i === activities.length - 1;
+        // Na leitura inicial de arquivo já existente, entra só no histórico (não inunda o feed).
+        this.opts.office.addActivity(s.id, act, isLast, { feed: !isInitial && !boot });
+      }
+
+      if (latestStatus) {
+        // Só atualiza status se a linha for mais recente do que o último evento ao vivo.
+        this.applyStatus(s, latestStatus, latestStatusAt);
+      }
+
+      if (shellsChanged || r.reset) {
+        this.opts.office.setShells(s.id, [...s.state.shells.values()]);
+      }
+      if (summaryChanged || isInitial) {
+        this.pushSummary(s);
+      }
+      if (!isInitial) {
+        s.lastActivityAt = now;
+      } else if (s.state.lastAt) {
+        s.lastActivityAt = Math.max(s.lastActivityAt, s.state.lastAt);
+      }
+      if (!r.more) break;
     }
   }
 
-  private ensureAdded(s: TrackedSession, initialStatus: AgentStatus, now: number, boot: boolean, waitingFor?: string): void {
+  private ensureAdded(
+    s: TrackedSession,
+    initialStatus: AgentStatus,
+    now: number,
+    boot: boolean,
+    waitingFor?: string,
+    statusAt: number = now,
+  ): void {
     if (s.added || !s.cwd) return;
     s.added = true;
     s.status = initialStatus;
-    s.statusAt = Math.max(s.statusAt, now);
+    s.statusAt = Math.max(s.statusAt, statusAt);
     s.waitingFor = waitingFor;
     this.opts.office.addMain({
       id: s.id,
@@ -669,16 +753,27 @@ export class PiSource implements AgentSource, PiLive {
 
   private closeSession(s: TrackedSession): void {
     this.sessions.delete(s.id);
-    if (s.added) this.opts.office.closeMain(s.id);
+    if (s.added) {
+      s.added = false;
+      this.opts.office.closeMain(s.id);
+    }
   }
 
   /** Lê o começo de um arquivo de sessão grande em segundo plano para completar título/estatísticas/histórico. */
   private readPrefixAsync(s: TrackedSession, endByte: number): void {
     const path = s.path;
+    const stateRef = s.state;
     if (!path || endByte <= 0) return;
     const prefixState = createPiState(s.state.meta);
     const older: Activity[] = [];
     const buf = new LineBuffer();
+    const feedLine = (lineBuf: Buffer) => {
+      const res = parsePiLine(prefixState, lineBuf.toString('utf8'), { idPrefix: s.id, now: this.now() });
+      if (res.activities.length) {
+        older.push(...res.activities);
+        if (older.length > PREFIX_HISTORY) older.splice(0, older.length - PREFIX_HISTORY);
+      }
+    };
     const stream = createReadStream(path, { start: 0, end: endByte - 1 });
     stream.on('data', (chunk: string | Buffer) => {
       if (this.stopped) {
@@ -687,17 +782,18 @@ export class PiSource implements AgentSource, PiLive {
       }
       const { lines, discarded } = buf.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
       if (discarded) warnOversizedLine(path);
-      for (const lineBuf of lines) {
-        const res = parsePiLine(prefixState, lineBuf.toString('utf8'), { idPrefix: s.id, now: this.now() });
-        if (res.activities.length) {
-          older.push(...res.activities);
-          if (older.length > PREFIX_HISTORY) older.splice(0, older.length - PREFIX_HISTORY);
-        }
-      }
+      for (const lineBuf of lines) feedLine(lineBuf);
     });
     stream.on('end', () => {
-      if (this.stopped || !this.sessions.has(s.id)) return;
-      if (!s.state.explicitTitle && !s.state.title && prefixState.title) s.state.title = prefixState.title;
+      const rest = buf.flush();
+      if (rest?.length) feedLine(rest);
+      if (this.stopped || this.sessions.get(s.id) !== s || s.state !== stateRef) return;
+      if (!s.state.explicitTitle && prefixState.explicitTitle) {
+        s.state.explicitTitle = prefixState.explicitTitle;
+        s.state.title = prefixState.explicitTitle;
+      } else if (!s.state.explicitTitle && !s.state.title && prefixState.title) {
+        s.state.title = prefixState.title;
+      }
       if (!s.state.model && prefixState.model) s.state.model = prefixState.model;
       s.state.stats.toolCalls += prefixState.stats.toolCalls;
       s.state.stats.tokensIn += prefixState.stats.tokensIn;

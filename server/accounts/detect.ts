@@ -97,24 +97,42 @@ const YEAR_DIR = /^\d{4}$/;
 const PI_PROJECT_DIR = /^--.*--$/;
 
 /**
- * A pasta é do Codex (um CODEX_HOME, ex.: ~/.codex)? Ela também tem `sessions/`; sem esta checagem viraria uma
- * conta do Claude Code vazia e o watcher leria `sessions/` como o registro de sessões. Só marcas que o Claude Code
- * nunca grava, conferidas pela EXISTÊNCIA (nada é aberto, nem `auth.json` nem `config.toml`):
- * - `sessions/AAAA/` (rollouts por data; o Claude Code guarda `sessions/<pid>.json` direto ali);
- * - `thread-writer-locks/` ou `archived_sessions/`;
- * - `config.toml` ou `auth.json`.
- * Com `projects/` (que o Codex não cria) é sempre do Claude Code: nenhuma conta que já funcionava deixa de valer.
- * Pasta inexistente ou vazia não é do Codex.
- */
-export function isCodexHome(p: string): boolean {
-  if (isDir(join(p, 'projects'))) return false;
+/** Marcas exclusivas do Codex (sem contar `auth.json`, que o Pi também cria). */
+function hasStrictCodexMarkers(p: string): boolean {
   if (isDir(join(p, 'thread-writer-locks')) || isDir(join(p, 'archived_sessions'))) return true;
-  if (isFile(join(p, 'config.toml')) || isFile(join(p, 'auth.json'))) return true;
+  if (isFile(join(p, 'config.toml'))) return true;
   try {
     return readdirSync(join(p, 'sessions'), { withFileTypes: true }).some((e) => e.isDirectory() && YEAR_DIR.test(e.name));
   } catch {
     return false;
   }
+}
+
+/** Marcas exclusivas do Pi coding agent (`models.json`, `extensions/` ou `sessions/--...--/`). */
+function hasPiMarkers(p: string): boolean {
+  if (isFile(join(p, 'models.json')) || isDir(join(p, 'extensions'))) return true;
+  try {
+    return readdirSync(join(p, 'sessions'), { withFileTypes: true }).some((e) => e.isDirectory() && PI_PROJECT_DIR.test(e.name));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A pasta é do Codex (um CODEX_HOME, ex.: ~/.codex)? Ela também tem `sessions/`; sem esta checagem viraria uma
+ * conta do Claude Code vazia e o watcher leria `sessions/` como o registro de sessões. Só marcas que o Claude Code
+ * nunca grava, conferidas pela EXISTÊNCIA (nada é aberto, nem `auth.json` nem `config.toml`):
+ * - `sessions/AAAA/` (rollouts por data; o Claude Code guarda `sessions/<pid>.json` direto ali);
+ * - `thread-writer-locks/` ou `archived_sessions/`;
+ * - `config.toml` ou `auth.json` (desde que não tenha marcas inequívocas do Pi, que também grava `auth.json`).
+ * Com `projects/` (que o Codex não cria) é sempre do Claude Code: nenhuma conta que já funcionava deixa de valer.
+ * Pasta inexistente ou vazia não é do Codex.
+ */
+export function isCodexHome(p: string): boolean {
+  if (isDir(join(p, 'projects'))) return false;
+  if (hasStrictCodexMarkers(p)) return true;
+  if (hasPiMarkers(p)) return false;
+  return isFile(join(p, 'auth.json'));
 }
 
 /**
@@ -135,17 +153,12 @@ export function isAntigravityDir(p: string): boolean {
 
 /**
  * A pasta tem marcas inequívocas do Pi coding agent (ex.: ~/.pi/agent)? Conferida só pela existência das pastas e
- * arquivos que o Claude Code não cria (`sessions/--...--/`, `models.json` ou `extensions/`), sem `projects/` e sem
- * ser do Codex.
+ * arquivos que o Claude Code e o Codex não criam (`sessions/--...--/`, `models.json` ou `extensions/`), mesmo quando
+ * o Pi também gravou `auth.json`.
  */
 export function isPiDir(p: string): boolean {
-  if (isDir(join(p, 'projects')) || isCodexHome(p)) return false;
-  if (isFile(join(p, 'models.json')) || isDir(join(p, 'extensions'))) return true;
-  try {
-    return readdirSync(join(p, 'sessions'), { withFileTypes: true }).some((e) => e.isDirectory() && PI_PROJECT_DIR.test(e.name));
-  } catch {
-    return false;
-  }
+  if (isDir(join(p, 'projects')) || hasStrictCodexMarkers(p)) return false;
+  return hasPiMarkers(p);
 }
 
 /** Tem a cara de um config dir do Claude Code (`projects/` ou `sessions/`), sem olhar se é do Codex. */
@@ -199,18 +212,20 @@ export function codexDirsRefused(env: NodeJS.ProcessEnv = process.env, home: str
 
 function scanClaudeDirs(env: NodeJS.ProcessEnv, home: string): { dirs: string[]; codex: string[] } {
   const codex: string[] = [];
-  /** Fora se for do Codex (anotado em `codex`). */
-  const notCodex = (p: string) => {
-    if (!isCodexHome(p)) return true;
-    codex.push(p);
-    return false;
+  /** Fora se for do Codex (anotado em `codex`), do Antigravity ou do Pi. */
+  const acceptedClaude = (p: string) => {
+    if (isCodexHome(p)) {
+      codex.push(p);
+      return false;
+    }
+    return !isAntigravityDir(p) && !isPiDir(p);
   };
   const unique = (list: string[]) => [...new Set(list)];
 
   const override = splitList(env.HABBLAUD_CLAUDE_DIRS);
   if (override.length) {
     const dirs = unique(override.map((p) => expandHome(p, home)));
-    return { dirs: dirs.filter(notCodex), codex };
+    return { dirs: dirs.filter(acceptedClaude), codex };
   }
 
   const found: string[] = [];
@@ -219,18 +234,18 @@ function scanClaudeDirs(env: NodeJS.ProcessEnv, home: string): { dirs: string[];
       if (!ent.name.startsWith('.claude')) continue;
       if (!ent.isDirectory() && !ent.isSymbolicLink()) continue;
       const p = join(home, ent.name);
-      if (hasClaudeLayout(p) && notCodex(p)) found.push(p);
+      if (hasClaudeLayout(p) && acceptedClaude(p)) found.push(p);
     }
   } catch {
     // $HOME ilegível (ex.: container sem home): segue com as outras fontes
   }
   for (const p of splitList(env.CLAUDE_CONFIG_DIR)) {
     const abs = expandHome(p, home);
-    if (isDir(abs) && notCodex(abs)) found.push(abs);
+    if (isDir(abs) && acceptedClaude(abs)) found.push(abs);
   }
   for (const o of claudeOverrides(env.HABBLAUD_ACCOUNTS)) {
     if (typeof o.mountDir !== 'string') continue;
-    if (hasClaudeLayout(o.mountDir) && notCodex(o.mountDir)) found.push(expandHome(o.mountDir, home));
+    if (hasClaudeLayout(o.mountDir) && acceptedClaude(o.mountDir)) found.push(expandHome(o.mountDir, home));
   }
   const dirs = unique(found.map((p) => expandHome(p, home)));
   dirs.sort((a, b) => {

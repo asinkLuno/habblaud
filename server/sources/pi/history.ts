@@ -5,6 +5,7 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { basename, join, sep } from 'node:path';
 import type { RecentSession } from '../../../shared/types';
 import { errMsg, log } from '../../log';
+import { mapLimit } from '../async';
 import { HISTORY_LIMIT, HISTORY_MAX_AGE_MS } from '../history';
 import type { HistoryProvider, HistoryResolveResult } from '../source';
 import { encodeCwd } from '../watcher';
@@ -221,9 +222,9 @@ export async function readPiSessionSummary(path: string, size: number): Promise<
     if (tailStart > 0) tail.shift();
     for (const line of tail) {
       if (!line.trim()) continue;
-      if (line.includes('"session_info"')) parsePiLine(state, line, ctx);
-      const m = /"timestamp":"([^"]+)"/.exec(line.slice(0, 260))?.[1];
-      const ms = m ? toMs(m) : undefined;
+      if (/"type"\s*:\s*"session_info"/.test(line)) parsePiLine(state, line, ctx);
+      const m = /"timestamp"\s*:\s*(?:"([^"]+)"|(\d+))/.exec(line);
+      const ms = m ? toMs(m[1] ?? Number(m[2])) : undefined;
       if (ms !== undefined && (summary.lastAt === undefined || ms > summary.lastAt)) summary.lastAt = ms;
     }
 
@@ -235,17 +236,4 @@ export async function readPiSessionSummary(path: string, size: number): Promise<
   } finally {
     await fh.close();
   }
-}
-
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
 }
