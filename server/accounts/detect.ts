@@ -219,6 +219,10 @@ const ALIAS_TOOLS: Record<Provider, { invokes: RegExp; dir: RegExp }> = {
     invokes: /(?:^|[\s;&|(])(?:[\w.~/-]*\/)?codex(?=$|[\s;&|)])/,
     dir: /\bCODEX_HOME=(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/,
   },
+  pi: {
+    invokes: /(?:^|[\s;&|(])(?:[\w.~/-]*\/)?pi(?=$|[\s;&|)])/,
+    dir: /\bPI_CODING_AGENT_DIR=(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/,
+  },
 };
 
 /**
