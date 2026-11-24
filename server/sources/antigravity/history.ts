@@ -9,10 +9,11 @@ import { maskSecrets, truncate } from '../../../shared/activity';
 import { tr } from '../../../shared/i18n';
 import type { RecentSession } from '../../../shared/types';
 import { errMsg, log } from '../../log';
+import { mapLimit } from '../async';
 import { HISTORY_LIMIT, HISTORY_MAX_AGE_MS } from '../history';
 import type { HistoryProvider, HistoryResolveResult } from '../source';
 import { encodeCwd } from '../watcher';
-import { findTranscriptPath, isConversationId, recentlyModifiedTranscripts, SummariesCache, type ConversationSummary } from './files';
+import { extractCwdFromStep, findTranscriptPath, isConversationId, recentlyModifiedTranscriptsAsync, SummariesCache, type ConversationSummary } from './files';
 import { createAntigravityTerminalParser } from './terminal';
 import { cleanPromptText } from './transcript';
 
@@ -83,7 +84,7 @@ export class AntigravityHistory implements HistoryProvider {
     const all: Candidate[] = [];
     for (const acc of this.opts.accounts()) {
       const summaries = this.summariesFor(acc.dir);
-      for (const item of recentlyModifiedTranscripts(acc.dir, this.maxAgeMs, now)) {
+      for (const item of await recentlyModifiedTranscriptsAsync(acc.dir, this.maxAgeMs, now)) {
         const meta = summaries.get(item.conversationId);
         if (meta?.parentConversationId) continue;
         all.push({ account: acc.id, conversationId: item.conversationId, path: item.path, dir: acc.dir, mtimeMs: item.mtimeMs, size: item.size, meta });
@@ -182,6 +183,7 @@ export async function readTranscriptSummary(path: string, size: number): Promise
           const clean = cleanPromptText(j.content);
           if (clean) summary.title = truncate(maskSecrets(clean.slice(0, 1_000)), TITLE_MAX);
         }
+        summary.cwd ??= extractCwdFromStep(j);
       } catch {
         // linha cortada
       }
@@ -190,7 +192,7 @@ export async function readTranscriptSummary(path: string, size: number): Promise
     const tailLines = (await read(tailStart, TAIL_BYTES)).toString('utf8').split('\n');
     if (tailStart > 0) tailLines.shift();
     for (const line of tailLines) {
-      const at = /"created_at":"([^"]+)"/.exec(line.slice(0, 300))?.[1];
+      const at = /"created_at"\s*:\s*"([^"]+)"/.exec(line)?.[1];
       const ms = at ? Date.parse(at) : NaN;
       if (!Number.isNaN(ms) && (summary.lastAt === undefined || ms > summary.lastAt)) summary.lastAt = ms;
     }
@@ -199,17 +201,4 @@ export async function readTranscriptSummary(path: string, size: number): Promise
   } finally {
     await fh.close();
   }
-}
-
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
 }

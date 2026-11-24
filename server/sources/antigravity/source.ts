@@ -12,20 +12,21 @@
 // - sem a pasta `conversations/` (ex.: montagem parcial ou fixture simples): transcripts modificados nos últimos
 //   30 min (`FALLBACK_RECENT_MS`);
 // - um evento de hook segura o agente presente por `HOOK_PRESENCE_MS` (60 s).
-import { createReadStream, realpathSync, watch, type FSWatcher } from 'node:fs';
-import { basename, resolve, sep } from 'node:path';
+import { createReadStream, existsSync, realpathSync, watch, type FSWatcher } from 'node:fs';
+import { basename, join, resolve, sep } from 'node:path';
+import { maskSecrets, truncate } from '../../../shared/activity';
 import { tr } from '../../../shared/i18n';
 import type { Activity, AgentStatus, SourceInfo } from '../../../shared/types';
-import type { DetectedAccount } from '../../accounts/detect';
 import type { AccountEntry, AccountsService } from '../../accounts/service';
 import { errMsg, log } from '../../log';
 import type { Office, TranscriptSummary } from '../../model/office';
-import { pathFromUri } from '../codex/rollout';
+import { pathFromUri } from '../parse';
 import type { AgentSource } from '../source';
 import { FileTail, LineBuffer, warnOversizedLine } from '../tail';
 import type { TerminalParser } from '../terminal';
 import { detectAntigravityAccounts } from './accounts';
 import {
+  BRAIN_DIR,
   CONVERSATIONS_DIR,
   findTranscriptPath,
   isConversationId,
@@ -40,6 +41,7 @@ import {
 import type { AntigravityLive } from './live';
 import { createAntigravityTerminalParser } from './terminal';
 import {
+  cleanPromptText,
   createAntigravityState,
   describeAntigravityPrompt,
   describeAntigravityTool,
@@ -58,6 +60,8 @@ export const HOOK_PRESENCE_MS = 60_000;
 const CLOSE_AFTER_MISSING_MS = 1_500;
 /** 'working' sem nenhuma escrita no transcript nem evento de hook por este tempo: o turno morreu (crash). */
 export const WORKING_QUIET_MS = 30 * 60_000;
+/** Subagente recém-criado pelo transcript do pai no boot (antes do primeiro passo do subagente). */
+const SUBAGENT_BOOT_RECENT_MS = 90_000;
 /** Atividades recuperadas do começo de um transcript grande para a linha do tempo longa. */
 const PREFIX_HISTORY = 120;
 const BACKLOG_MAX = 400;
@@ -106,6 +110,9 @@ interface ConversationTracker {
   hookRole?: string;
   hookModel?: string;
   hookTitle?: string;
+  spawnRole?: string;
+  spawnTitle?: string;
+  spawnAt?: number;
   headCwd?: string;
   status: AgentStatus;
   statusAt: number;
@@ -136,7 +143,6 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
   readonly provider = 'antigravity' as const;
   private accs: AntigravityAccount[] = [];
   private entries: readonly AccountEntry[] = [];
-  private detected: DetectedAccount[] = [];
   private convs = new Map<string, ConversationTracker>();
   private dirWatchers = new Map<string, FSWatcher>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -154,38 +160,25 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     this.useWatch = opts.watch ?? true;
     const env = opts.env ?? process.env;
     const existing = opts.accounts.allEntries();
-    this.detected = detectAntigravityAccounts(opts.dirs, {
+    const detected = detectAntigravityAccounts(opts.dirs, {
       env,
       home: opts.home,
       taken: { shorts: existing.map((e) => e.detected.short), colors: existing.map((e) => e.detected.color) },
     });
-    this.register();
-  }
-
-  private register(): void {
     const entries = this.opts.accounts.setProviderAccounts(
       'antigravity',
-      this.opts.dirs.map((dir, i) => ({ dir, detected: this.detected[i] })),
+      this.opts.dirs.map((dir, i) => ({ dir, detected: detected[i] })),
     );
     this.entries = entries;
-    const prev = new Map(this.accs.map((a) => [a.dir, a]));
-    this.accs = entries.map((e) => {
-      const old = prev.get(e.dir);
-      if (old) {
-        old.id = e.id;
-        old.configDir = e.detected.configDir;
-        return old;
-      }
-      return {
-        id: e.id,
-        dir: e.dir,
-        configDir: e.detected.configDir,
-        summaries: new SummariesCache(e.dir),
-        wals: null,
-        recent: new Map(),
-        recentAt: -Infinity,
-      };
-    });
+    this.accs = entries.map((e) => ({
+      id: e.id,
+      dir: e.dir,
+      configDir: e.detected.configDir,
+      summaries: new SummariesCache(e.dir),
+      wals: null,
+      recent: new Map(),
+      recentAt: -Infinity,
+    }));
   }
 
   accountEntries(): readonly AccountEntry[] {
@@ -193,6 +186,8 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
   }
 
   start(): void {
+    this.stopped = false;
+    if (this.timer) clearInterval(this.timer);
     this.boot();
     this.timer = setInterval(() => this.safePoll(), this.opts.pollMs ?? 1_000);
     this.timer.unref?.();
@@ -265,6 +260,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     const now = (this.lastPollAt = this.now());
     const seen = new Set<string>();
     for (const acc of this.accs) {
+      acc.error = existsSync(acc.dir) ? undefined : tr('pasta não encontrada: {0}', [acc.configDir]);
       const summaries = acc.summaries.read();
       const present = this.presentConversations(acc, summaries, now);
       for (const [conversationId, via] of present) {
@@ -283,6 +279,20 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
         }
         seen.add(key);
       }
+      // Subagentes recém-descobertos no transcript do pai durante este ciclo (ainda não estavam em `present`).
+      for (const t of this.convs.values()) {
+        if (t.acc !== acc || t.kind !== 'sub' || seen.has(t.key)) continue;
+        if (!t.parentConversationId || !present.has(t.parentConversationId)) continue;
+        if (!this.isSubPresent(t, now)) continue;
+        const sum = summaries.get(t.conversationId);
+        if (sum) this.applySummaryMeta(t, sum, !boot);
+        try {
+          this.syncConversation(t, 'spawn', now, boot);
+        } catch (err) {
+          log.warnOnce(`agy-conv:${t.key}:${errMsg(err)}`, tr('Antigravity: conversa {0}: {1}', [t.key, errMsg(err)]));
+        }
+        seen.add(t.key);
+      }
     }
     for (const [key, t] of [...this.convs]) {
       if (seen.has(key)) continue;
@@ -295,12 +305,21 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     for (const t of this.convs.values()) if (t.kind === 'sub' && !t.inOffice && seen.has(t.key)) this.reconcile(t, now);
   }
 
+  private isSubPresent(t: ConversationTracker, now: number): boolean {
+    if (t.summary?.killed) return false;
+    if (t.hookSpawned || (t.inOffice && !t.subDone)) return true;
+    if (t.status === 'working' || t.status === 'waiting') return true;
+    if (t.lastHookAt !== undefined && now - t.lastHookAt < HOOK_PRESENCE_MS) return true;
+    if (t.spawnAt !== undefined && !t.subDone && now - t.spawnAt <= SUBAGENT_BOOT_RECENT_MS) return true;
+    return false;
+  }
+
   private presentConversations(
     acc: AntigravityAccount,
     summaries: Map<string, ConversationSummary>,
     now: number,
-  ): Map<string, 'wal' | 'summary' | 'recent' | 'hook'> {
-    const out = new Map<string, 'wal' | 'summary' | 'recent' | 'hook'>();
+  ): Map<string, 'wal' | 'summary' | 'recent' | 'hook' | 'spawn'> {
+    const out = new Map<string, 'wal' | 'summary' | 'recent' | 'hook' | 'spawn'>();
     this.watchDir(acc.dir);
     acc.wals = readOpenWals(acc.dir);
     if (acc.wals) {
@@ -326,7 +345,11 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     }
     for (const t of this.convs.values()) {
       if (t.acc !== acc || out.has(t.conversationId)) continue;
-      if (t.lastHookAt !== undefined && now - t.lastHookAt < HOOK_PRESENCE_MS) out.set(t.conversationId, 'hook');
+      if (t.lastHookAt !== undefined && now - t.lastHookAt < HOOK_PRESENCE_MS) {
+        out.set(t.conversationId, 'hook');
+      } else if (t.kind === 'sub' && t.parentConversationId && out.has(t.parentConversationId) && this.isSubPresent(t, now)) {
+        out.set(t.conversationId, 'spawn');
+      }
     }
     return out;
   }
@@ -347,17 +370,21 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     };
   }
 
+  private promoteToSub(t: ConversationTracker, parentId: string): void {
+    if (t.kind === 'main' && t.inOffice) {
+      this.opts.office.closeMain(t.key);
+      t.inOffice = false;
+    }
+    t.kind = 'sub';
+    t.parentConversationId = parentId;
+  }
+
   private applySummaryMeta(t: ConversationTracker, sum: ConversationSummary, live: boolean): void {
     t.summary = sum;
-    if (sum.parentConversationId) {
-      if (t.kind === 'main' && t.inOffice) {
-        this.opts.office.closeMain(t.key);
-        t.inOffice = false;
-      }
-      t.kind = 'sub';
-      t.parentConversationId = sum.parentConversationId;
-    }
-    const at = sum.lastModifiedAt ?? this.now();
+    if (sum.gitBranch) t.state.gitBranch = sum.gitBranch;
+    if (sum.parentConversationId) this.promoteToSub(t, sum.parentConversationId);
+    const at = sum.lastModifiedAt ?? (t.statusAt > 0 ? 0 : this.now());
+    if (at <= t.statusAt && t.statusAt > 0) return;
     if (sum.killed && t.kind === 'sub') {
       this.decide(t, 'idle', at, undefined, live);
       return;
@@ -372,7 +399,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     }
   }
 
-  private syncConversation(t: ConversationTracker, via: 'wal' | 'summary' | 'recent' | 'hook', now: number, boot: boolean): void {
+  private syncConversation(t: ConversationTracker, via: 'wal' | 'summary' | 'recent' | 'hook' | 'spawn', now: number, boot: boolean): void {
     delete t.missingSince;
     if (t.inOffice && !this.opts.office.has(t.key)) t.inOffice = false;
     this.pump(t, boot);
@@ -386,7 +413,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     }
   }
 
-  private reconcile(t: ConversationTracker, now: number, via?: 'wal' | 'summary' | 'recent' | 'hook'): void {
+  private reconcile(t: ConversationTracker, now: number, via?: 'wal' | 'summary' | 'recent' | 'hook' | 'spawn'): void {
     const want = this.wanted(t, now, via);
     if (!want) {
       if (t.inOffice) this.leave(t);
@@ -395,7 +422,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     if (!t.inOffice) this.enter(t, now);
   }
 
-  private wanted(t: ConversationTracker, now: number, via?: 'wal' | 'summary' | 'recent' | 'hook'): boolean {
+  private wanted(t: ConversationTracker, now: number, via?: 'wal' | 'summary' | 'recent' | 'hook' | 'spawn'): boolean {
     if (t.summary?.killed) return false;
     const hookRecent = t.lastHookAt !== undefined && now - t.lastHookAt < HOOK_PRESENCE_MS;
     if (!hookRecent && via === 'wal') {
@@ -421,7 +448,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
   }
 
   private titleOf(t: ConversationTracker): string | undefined {
-    return t.summary?.title ?? t.state.title ?? t.hookTitle;
+    return t.summary?.title ?? t.state.title ?? t.spawnTitle ?? t.hookTitle;
   }
 
   private enter(t: ConversationTracker, now: number): void {
@@ -449,7 +476,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
         id: t.key,
         parentId: parent,
         sessionId: t.conversationId,
-        role: roleOf(t.summary?.agentRole ?? t.hookRole),
+        role: roleOf(t.summary?.agentRole ?? t.spawnRole ?? t.hookRole),
         title: this.titleOf(t),
         background: true,
         startedAt,
@@ -569,7 +596,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
 
   private settleStatus(t: ConversationTracker): void {
     const s = t.state;
-    const at = Math.max(s.lastAt ?? 0, t.summary?.lastModifiedAt ?? 0);
+    const at = Math.max(s.lastAt ?? 0, t.summary?.lastModifiedAt ?? 0, t.spawnAt ?? 0);
     if (at < t.statusAt) return;
     let status: AgentStatus;
     let waitingFor: string | undefined;
@@ -577,6 +604,9 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
       status = 'waiting';
       waitingFor = s.waitingQuestions ? tr('responder uma pergunta') : tr('responder no Antigravity');
     } else if (t.summary?.status === 'running' || t.summary?.status === 'busy' || s.turnOpen) {
+      status = 'working';
+    } else if (t.kind === 'sub' && s.turnOpen === undefined && (t.hookSpawned || (t.spawnAt !== undefined && this.now() - t.spawnAt <= SUBAGENT_BOOT_RECENT_MS))) {
+      // Subagente recém-criado cujo transcript ainda só tem SYSTEM_MESSAGE inicial (antes do 1º PLANNER_RESPONSE).
       status = 'working';
     } else if (t.summary?.notFullyIdle || s.shells.size > 0) {
       status = 'shell';
@@ -588,6 +618,29 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     t.statusAt = at;
     if (waitingFor) t.waitingFor = waitingFor;
     else delete t.waitingFor;
+  }
+
+  private registerSpawnedSubagent(
+    parent: ConversationTracker,
+    subId: string,
+    info: { role?: string; title?: string; transcriptPath?: string; at: number; live: boolean },
+  ): void {
+    if (subId === parent.conversationId) return;
+    const key = `${parent.acc.id}:${subId}`;
+    let sub = this.convs.get(key);
+    if (!sub) {
+      sub = this.newTracker(parent.acc, subId);
+      this.convs.set(key, sub);
+    }
+    this.promoteToSub(sub, parent.conversationId);
+    if (info.role) sub.spawnRole ??= info.role;
+    if (info.title) sub.spawnTitle ??= info.title;
+    sub.spawnAt = Math.max(sub.spawnAt ?? 0, info.at);
+    if (info.live) {
+      sub.hookSpawned = true;
+      this.decide(sub, 'working', info.at, undefined, true);
+    }
+    if (info.transcriptPath) this.hintTranscript(parent.acc, subId, info.transcriptPath);
   }
 
   private apply(t: ConversationTracker, r: AntigravityLineResult, live: boolean): void {
@@ -605,6 +658,22 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
         case 'progress':
           if (t.status === 'waiting') this.decide(t, 'working', r.at, undefined, live);
           break;
+        case 'subagentSpawn':
+          this.registerSpawnedSubagent(t, sig.conversationId, {
+            role: sig.role,
+            title: sig.title,
+            transcriptPath: sig.transcriptPath,
+            at: r.at,
+            live,
+          });
+          break;
+        case 'subagentMessage': {
+          const sub = this.convs.get(`${t.acc.id}:${sig.conversationId}`);
+          if (sub && sub.kind === 'sub' && sub.inOffice && !sub.subDone && sub.state.turnOpen !== true) {
+            this.decide(sub, 'idle', r.at, undefined, live);
+          }
+          break;
+        }
       }
     }
     if (!live || !t.inOffice) {
@@ -654,7 +723,8 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     if (title) summary.title = title;
     const model = s.model ?? t.hookModel;
     if (model) summary.model = model;
-    if (s.gitBranch) summary.gitBranch = s.gitBranch;
+    const gitBranch = s.gitBranch ?? t.summary?.gitBranch;
+    if (gitBranch) summary.gitBranch = gitBranch;
     const firstAt = t.summary?.createdAt ?? s.firstAt;
     if (firstAt !== undefined) summary.firstAt = firstAt;
     const lastAt = Math.max(s.lastAt ?? 0, t.summary?.lastModifiedAt ?? 0);
@@ -676,13 +746,13 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
             state.stats.tokensOut += tok.out;
           }
         }
-        for (const step of prefix.state.countedSteps) {
+        for (const [step, counts] of prefix.state.countedSteps) {
           if (!state.countedSteps.has(step)) {
-            state.countedSteps.add(step);
+            state.countedSteps.set(step, counts);
+            state.stats.toolCalls += counts.toolCalls;
+            state.stats.subagents += counts.subagents;
           }
         }
-        state.stats.toolCalls += prefix.state.stats.toolCalls;
-        state.stats.subagents += prefix.state.stats.subagents;
         state.title ??= prefix.state.title;
         state.model ??= prefix.state.model;
         if (!state.tasks.length && prefix.state.tasks.length) state.tasks = prefix.state.tasks;
@@ -698,6 +768,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
   // ---------------------------------------------------------------- hooks (AntigravityLive)
 
   applyHookEvent(account: string | undefined, input: Record<string, unknown>): boolean {
+    if (this.stopped) return false;
     try {
       return this.hookEvent(account, input);
     } catch (err) {
@@ -737,9 +808,13 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
       case 'PreInvocation': {
         if (parentId) t.hookSpawned = true;
         this.decide(t, 'working', now, undefined, true);
+        this.reconcile(t, now, 'hook');
         if (lastUserInput && t.inOffice) {
-          const act: Activity = { id: `${t.key}#hook-u:${now.toString(36)}`, at: now, ...describeAntigravityPrompt(lastUserInput) };
-          this.opts.office.addActivity(t.key, act, true);
+          const clean = cleanPromptText(lastUserInput);
+          if (clean) {
+            const act: Activity = { id: `${t.key}#hook-u:${now.toString(36)}`, at: now, ...describeAntigravityPrompt(clean) };
+            this.opts.office.addActivity(t.key, act, true);
+          }
         }
         break;
       }
@@ -754,7 +829,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
         const tc = rec(input.toolCall ?? input.tool_call);
         const toolName = str(tc?.name ?? input.tool_name) ?? 'ferramenta';
         const toolArgs = rec(tc?.args ?? input.tool_input) ?? {};
-        const { desc, tool } = describeAntigravityTool(toolName, toolArgs);
+        const { desc, tool } = describeAntigravityTool(toolName, toolArgs, { unwrapped: true });
         const callId = str(tc?.id ?? input.tool_use_id) ?? `hook${now.toString(36)}`;
         const act: Activity = { id: `${t.key}#${callId}`, at: now, ...desc, tool };
         if (t.inOffice) this.opts.office.addActivity(t.key, act, true);
@@ -789,13 +864,13 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
     t.lastHookAt = now;
     delete t.missingSince;
     if (cwd) t.hookCwd ??= cwd;
-    if (parent && t.kind === 'main') {
-      t.kind = 'sub';
-      t.parentConversationId = parent;
-    }
+    if (parent && t.kind === 'main') this.promoteToSub(t, parent);
     if (agentRole) t.hookRole ??= agentRole;
     if (modelName && modelName !== 'auto') t.hookModel = modelName;
-    if (lastUserInput && !t.hookTitle) t.hookTitle = lastUserInput.slice(0, 90);
+    if (lastUserInput && !t.hookTitle) {
+      const clean = cleanPromptText(lastUserInput);
+      if (clean) t.hookTitle = truncate(maskSecrets(clean.slice(0, 1_000)), 90);
+    }
     if (t.inOffice && !this.opts.office.has(t.key)) t.inOffice = false;
     this.pump(t, false);
     return t;
@@ -804,10 +879,16 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
   private hintTranscript(acc: AntigravityAccount, conversationId: string, path: string | undefined): void {
     if (!path) return;
     const t = this.convs.get(`${acc.id}:${conversationId}`);
+    let candidate = path;
+    const hostRoot = resolve(acc.configDir);
+    const localRoot = resolve(acc.dir);
+    if (hostRoot !== localRoot && candidate.startsWith(hostRoot + sep)) {
+      candidate = join(localRoot, candidate.slice(hostRoot.length + 1));
+    }
     try {
-      const real = realpathSync(path);
-      const root = realpathSync(acc.dir);
-      if (!real.startsWith(root + sep)) return;
+      const real = realpathSync(candidate);
+      const expectedDir = realpathSync(join(acc.dir, BRAIN_DIR, conversationId.toLowerCase()));
+      if (!real.startsWith(expectedDir + sep)) return;
       if (samePath(real, t?.tail?.path)) return;
       if (t) this.load(t, real);
     } catch {
@@ -848,7 +929,7 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
   // ---------------------------------------------------------------- fs.watch
 
   private watchDir(dir: string): void {
-    if (!this.useWatch || this.dirWatchers.has(dir)) return;
+    if (this.stopped || !this.useWatch || this.dirWatchers.has(dir)) return;
     try {
       const w = watch(dir, { persistent: false }, (_ev, filename) => {
         if (!filename || filename === SUMMARIES_PROTO || filename.endsWith('.db-wal') || filename.endsWith('.db-shm')) this.schedule();
@@ -864,11 +945,14 @@ export class AntigravitySource implements AgentSource, AntigravityLive {
   }
 
   private watchFile(t: ConversationTracker, path: string): void {
-    if (!this.useWatch) return;
+    if (this.stopped || !this.useWatch) return;
     this.unwatch(t);
     try {
       const w = watch(path, { persistent: false }, () => this.schedule());
-      w.on('error', () => w.close());
+      w.on('error', () => {
+        w.close();
+        if (t.watcher === w) delete t.watcher;
+      });
       t.watcher = w;
     } catch {
       // sem suporte: o polling cobre

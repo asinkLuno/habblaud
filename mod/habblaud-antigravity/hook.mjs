@@ -57,12 +57,15 @@ export function readConfig(env = process.env) {
  */
 export function antigravityHomeOf(env, input) {
   const home = env.HOME || homedir();
-  const fromEnv = typeof env.ANTIGRAVITY_CLI_HOME === 'string' ? env.ANTIGRAVITY_CLI_HOME.trim() : '';
+  const fromEnv = typeof (env.ANTIGRAVITY_CLI_HOME ?? env.JETSKI_APP_DATA_DIR) === 'string' ? (env.ANTIGRAVITY_CLI_HOME ?? env.JETSKI_APP_DATA_DIR).trim() : '';
   if (fromEnv) return expandHome(fromEnv, home);
   for (const raw of [input?.transcriptPath, input?.transcript_path, input?.artifactDirectoryPath]) {
     const t = typeof raw === 'string' ? raw : '';
     const m = /^(.+)[\\/]brain(?:[\\/]|$)/.exec(t);
-    if (m && isAbsolute(m[1])) return expandHome(m[1], home);
+    if (m && isAbsolute(m[1])) {
+      const candidate = expandHome(m[1], home);
+      if (/^\.?antigravity-cli/i.test(basename(candidate))) return candidate;
+    }
   }
   return join(home, '.gemini', 'antigravity-cli');
 }
@@ -91,7 +94,17 @@ function fitted(v, size) {
 
 export function eventBody(input, account, antigravityHome) {
   const body = { account, antigravityHome, event: input };
-  body.event = fitted(input, (event) => JSON.stringify({ ...body, event }).length);
+  const byteSize = (event) => Buffer.byteLength(JSON.stringify({ ...body, event }), 'utf8');
+  body.event = fitted(input, byteSize);
+  if (byteSize(body.event) > MAX_BODY && isObject(body.event)) {
+    const slim = { ...body.event };
+    delete slim.lastUserInput;
+    delete slim.last_user_input;
+    if (isObject(slim.toolCall)) slim.toolCall = { id: slim.toolCall.id, name: slim.toolCall.name };
+    if (isObject(slim.tool_call)) slim.tool_call = { id: slim.tool_call.id, name: slim.tool_call.name };
+    delete slim.tool_input;
+    body.event = slim;
+  }
   return body;
 }
 

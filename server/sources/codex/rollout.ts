@@ -12,7 +12,8 @@
 // andamento, o hook PreToolUse e o item concluído caem na mesma atividade.
 // Tokens: o `total_token_usage` do token_count é cumulativo e o cache JÁ está dentro de input (não soma de novo).
 // Tipos de linha desconhecidos são ignorados; uma linha inválida nunca derruba a leitura.
-import { fileURLToPath } from 'node:url';
+import { commandText, pathFromUri } from '../parse';
+export { commandText, pathFromUri };
 import { describePrompt, describeTool, maskSecrets, SPECIAL, truncate, type ActivityDescription } from '../../../shared/activity';
 import type { GitHubEvent } from '../../../shared/github';
 import type { AccountUsage, Activity, AgentStats, TaskItem, TaskStatus, UsageWindow } from '../../../shared/types';
@@ -162,23 +163,6 @@ export function usageFromRateLimits(raw: unknown, at: number): AccountUsage | un
 
 // ------------------------------------------------------------------ comandos
 
-const SHELLS = /^(?:.*\/)?(?:ba|z|da|k|fi)?sh$/;
-
-/**
- * O comando legível de um CommandExecution/exec: `command` é uma lista (`["/bin/zsh", "-lc", "npm test"]`) ou um
- * texto. O invólucro do shell (`-lc`, `-c`) sai; o resto é juntado com espaços (palavras com espaço entre aspas).
- */
-export function commandText(cmd: unknown): string {
-  if (typeof cmd === 'string') return cmd.trim();
-  if (!Array.isArray(cmd)) return '';
-  const words = cmd.filter((w): w is string => typeof w === 'string');
-  if (words.length >= 3 && SHELLS.test(words[0]) && /^-[a-z]*c$/.test(words[1])) return words.slice(2).join(' ').trim();
-  return words
-    .map((w) => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`))
-    .join(' ')
-    .trim();
-}
-
 /** Arquivos tocados por um patch do apply_patch ("*** Add File: x", "*** Update File: y", "*** Delete File: z"). */
 export function patchFiles(patch: string): Array<{ path: string; kind: 'add' | 'update' | 'delete' }> {
   const out: Array<{ path: string; kind: 'add' | 'update' | 'delete' }> = [];
@@ -217,27 +201,6 @@ export function fileChanges(raw: unknown): FileChangeEntry[] {
   if (Array.isArray(raw)) for (const c of raw) push(rec(c)?.path, rec(c) ?? {});
   else if (rec(raw)) for (const [path, c] of Object.entries(rec(raw)!)) push(path, rec(c) ?? {});
   return out;
-}
-
-/** Caminho de um `file://` (cwd e caminhos do Codex vêm como URL). Drive ou host UNC viram caminho
- *  Windows: o rollout pode ter sido gravado em outro sistema. */
-export function pathFromUri(v: unknown): string | undefined {
-  const s = str(v);
-  if (!s) return undefined;
-  if (!s.startsWith('file://')) return s;
-  try {
-    const url = new URL(s);
-    const path = decodeURIComponent(url.pathname);
-    // localhost o parser do file:// já esvazia; host que sobra é UNC. Letra de drive também é Windows.
-    const windows = (url.hostname !== '' && url.hostname !== 'localhost') || /^\/[A-Za-z]:/.test(path);
-    return fileURLToPath(url, { windows });
-  } catch {
-    try {
-      return decodeURIComponent(new URL(s).pathname);
-    } catch {
-      return s.slice('file://'.length);
-    }
-  }
 }
 
 /** Argumentos de uma chamada de função: string JSON (o normal) ou objeto. */

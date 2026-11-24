@@ -6,11 +6,12 @@
 // - `history.jsonl`: histórico curto de entradas do TUI (`workspace`, `conversationId`, `display`);
 // - `brain/<id>/.system_generated/logs/transcript.jsonl` (ou `transcript_full.jsonl`): passos da conversa.
 // Só leitura: nada é criado e nenhum token ou credencial é aberto.
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { maskSecrets, truncate } from '../../../shared/activity';
-import { pathFromUri } from '../codex/rollout';
-import { cleanPromptText } from './transcript';
+import { pathFromUri } from '../parse';
+import { cleanPromptText, unwrapValue } from './transcript';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const WAL_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.db-(?:wal|shm)$/i;
@@ -80,6 +81,7 @@ export interface ConversationSummary {
   title?: string;
   stepCount?: number;
   cwd?: string;
+  gitBranch?: string;
   status?: SummaryRunStatus;
   waiting?: boolean;
   notFullyIdle?: boolean;
@@ -98,43 +100,40 @@ interface WireField {
   bytes?: Buffer;
 }
 
+function readVarint(buf: Buffer, start: number): { value: bigint; next: number } | undefined {
+  let val = 0n;
+  let shift = 0n;
+  let i = start;
+  while (i < buf.length) {
+    const b = buf[i++];
+    val |= BigInt(b & 0x7f) << shift;
+    if (!(b & 0x80)) return { value: val, next: i };
+    shift += 7n;
+    if (shift > 63n) return undefined;
+  }
+  return undefined;
+}
+
 function decodeWire(buf: Buffer): WireField[] {
   const out: WireField[] = [];
   let i = 0;
   while (i < buf.length) {
-    let tag = 0n;
-    let shift = 0n;
-    while (i < buf.length) {
-      const b = buf[i++];
-      tag |= BigInt(b & 0x7f) << shift;
-      if (!(b & 0x80)) break;
-      shift += 7n;
-      if (shift > 63n) return out;
-    }
-    const field = Number(tag >> 3n);
-    const wire = Number(tag & 7n);
+    const tagRes = readVarint(buf, i);
+    if (!tagRes) break;
+    i = tagRes.next;
+    const field = Number(tagRes.value >> 3n);
+    const wire = Number(tagRes.value & 7n);
     if (field <= 0) break;
     if (wire === 0) {
-      let val = 0n;
-      let s = 0n;
-      while (i < buf.length) {
-        const b = buf[i++];
-        val |= BigInt(b & 0x7f) << s;
-        if (!(b & 0x80)) break;
-        s += 7n;
-        if (s > 63n) return out;
-      }
-      out.push({ field, wire, varint: val });
+      const valRes = readVarint(buf, i);
+      if (!valRes) break;
+      i = valRes.next;
+      out.push({ field, wire, varint: valRes.value });
     } else if (wire === 2) {
-      let len = 0;
-      let s = 0;
-      while (i < buf.length) {
-        const b = buf[i++];
-        len |= (b & 0x7f) << s;
-        if (!(b & 0x80)) break;
-        s += 7;
-        if (s > 28) return out;
-      }
+      const lenRes = readVarint(buf, i);
+      if (!lenRes || lenRes.value > BigInt(buf.length - lenRes.next)) break;
+      const len = Number(lenRes.value);
+      i = lenRes.next;
       if (len < 0 || i + len > buf.length) break;
       out.push({ field, wire, bytes: buf.subarray(i, i + len) });
       i += len;
@@ -220,6 +219,8 @@ function decodeSummaryEntry(buf: Buffer): ConversationSummary | undefined {
         const uri = firstStringField(f.bytes, 1);
         const p = uri ? pathFromUri(uri) : undefined;
         if (p) out.cwd ??= p;
+        const branch = firstStringField(f.bytes, 4);
+        if (branch) out.gitBranch ??= branch;
         break;
       }
       case 15: {
@@ -234,6 +235,8 @@ function decodeSummaryEntry(buf: Buffer): ConversationSummary | undefined {
             const uri = firstStringField(mf.bytes, 1);
             const p = uri ? pathFromUri(uri) : undefined;
             if (p) out.cwd ??= p;
+            const branch = firstStringField(mf.bytes, 4);
+            if (branch) out.gitBranch ??= branch;
           } else if (mf.field === 2 && out.createdAt === undefined) {
             const ts = decodeTimestampMs(mf.bytes);
             if (ts !== undefined) out.createdAt = ts;
@@ -302,13 +305,15 @@ function readTailText(path: string, maxBytes: number): string {
     return '';
   }
   try {
-    const st = statSync(path);
+    const st = fstatSync(fd);
     const start = Math.max(0, st.size - maxBytes);
     const len = Math.max(0, st.size - start);
     const buf = Buffer.alloc(len);
     const n = len > 0 ? readSync(fd, buf, 0, len, start) : 0;
     const text = buf.subarray(0, n).toString('utf8');
-    return start > 0 ? text.slice(text.indexOf('\n') + 1) : text;
+    if (start <= 0) return text;
+    const nl = text.indexOf('\n');
+    return nl === -1 ? '' : text.slice(nl + 1);
   } catch {
     return '';
   } finally {
@@ -318,21 +323,23 @@ function readTailText(path: string, maxBytes: number): string {
 
 /**
  * Lê os resumos das conversas de uma pasta do Antigravity CLI (`jetbox_summaries_proto.pb`, `annotations/*.pbtxt` e o
- * fim de `history.jsonl`), com cache por mtime.
+ * fim de `history.jsonl`), com cache por mtime+tamanho.
  */
 export class SummariesCache {
-  private protoMtime = -1;
+  private protoSig = '';
   private protoMap = new Map<string, ConversationSummary>();
-  private historyMtime = -1;
+  private historySig = '';
   private historyMap = new Map<string, { cwd?: string; title?: string; lastAt?: number }>();
-  private annotations = new Map<string, { mtimeMs: number; title?: string }>();
+  private annotations = new Map<string, { sig: string; title?: string }>();
+  private merged: Map<string, ConversationSummary> | null = null;
 
   constructor(readonly home: string) {}
 
   read(): Map<string, ConversationSummary> {
-    this.refreshProto();
-    this.refreshHistory();
-    this.refreshAnnotations();
+    const protoChanged = this.refreshProto();
+    const historyChanged = this.refreshHistory();
+    const annChanged = this.refreshAnnotations();
+    if (!protoChanged && !historyChanged && !annChanged && this.merged) return this.merged;
     const out = new Map<string, ConversationSummary>();
     for (const [id, s] of this.protoMap) out.set(id, { ...s });
     for (const [id, a] of this.annotations) {
@@ -348,65 +355,77 @@ export class SummariesCache {
       if (h.lastAt !== undefined && (cur.lastModifiedAt === undefined || h.lastAt > cur.lastModifiedAt)) cur.lastModifiedAt = h.lastAt;
       out.set(id, cur);
     }
+    this.merged = out;
     return out;
   }
 
-  private refreshProto(): void {
+  private refreshProto(): boolean {
     const p = join(this.home, SUMMARIES_PROTO);
     try {
       const st = statSync(p);
-      if (st.mtimeMs === this.protoMtime) return;
-      this.protoMtime = st.mtimeMs;
+      const sig = `${st.mtimeMs}:${st.size}`;
+      if (sig === this.protoSig) return false;
+      this.protoSig = sig;
       this.protoMap = parseSummariesProto(readFileSync(p));
+      return true;
     } catch {
-      this.protoMtime = -1;
+      if (!this.protoSig && this.protoMap.size === 0) return false;
+      this.protoSig = '';
       this.protoMap.clear();
+      return true;
     }
   }
 
-  private refreshHistory(): void {
+  private refreshHistory(): boolean {
     const p = join(this.home, HISTORY_FILE);
     try {
       const st = statSync(p);
-      if (st.mtimeMs === this.historyMtime) return;
-      this.historyMtime = st.mtimeMs;
+      const sig = `${st.mtimeMs}:${st.size}`;
+      if (sig === this.historySig) return false;
+      this.historySig = sig;
       const next = new Map<string, { cwd?: string; title?: string; lastAt?: number }>();
-      let lastWorkspace: string | undefined;
       for (const line of readTailText(p, HISTORY_TAIL_BYTES).split('\n')) {
         if (!line.trim()) continue;
         try {
           const j = JSON.parse(line) as { conversationId?: unknown; workspace?: unknown; display?: unknown; type?: unknown; timestamp?: unknown };
-          const ws = typeof j.workspace === 'string' && j.workspace.trim() ? j.workspace.trim() : undefined;
-          if (ws) lastWorkspace = ws;
           const id = typeof j.conversationId === 'string' ? j.conversationId.trim().toLowerCase() : undefined;
           if (!isConversationId(id)) continue;
+          const wsRaw = typeof j.workspace === 'string' && j.workspace.trim() ? j.workspace.trim() : undefined;
+          const ws = wsRaw ? pathFromUri(wsRaw) : undefined;
           const cur = next.get(id) ?? {};
-          if (ws ?? lastWorkspace) cur.cwd ??= ws ?? lastWorkspace;
+          if (ws) cur.cwd ??= ws;
           if (j.type !== 'slash_command' && typeof j.display === 'string' && j.display.trim() && !j.display.trim().startsWith('/')) {
             cur.title ??= truncate(maskSecrets(j.display.trim()), TITLE_MAX);
           }
-          if (typeof j.timestamp === 'number' && Number.isFinite(j.timestamp)) cur.lastAt = j.timestamp;
+          if (typeof j.timestamp === 'number' && Number.isFinite(j.timestamp)) {
+            cur.lastAt = cur.lastAt === undefined ? j.timestamp : Math.max(cur.lastAt, j.timestamp);
+          }
           next.set(id, cur);
         } catch {
           // linha inválida
         }
       }
       this.historyMap = next;
+      return true;
     } catch {
-      this.historyMtime = -1;
+      if (!this.historySig && this.historyMap.size === 0) return false;
+      this.historySig = '';
       this.historyMap.clear();
+      return true;
     }
   }
 
-  private refreshAnnotations(): void {
+  private refreshAnnotations(): boolean {
     const dir = join(this.home, ANNOTATIONS_DIR);
     let names: string[];
     try {
       names = readdirSync(dir);
     } catch {
+      if (this.annotations.size === 0) return false;
       this.annotations.clear();
-      return;
+      return true;
     }
+    let changed = false;
     const seen = new Set<string>();
     for (const name of names) {
       const m = PBTXT_FILE.exec(name);
@@ -416,15 +435,23 @@ export class SummariesCache {
       const path = join(dir, name);
       try {
         const st = statSync(path);
+        const sig = `${st.mtimeMs}:${st.size}`;
         const prev = this.annotations.get(id);
-        if (prev && prev.mtimeMs === st.mtimeMs) continue;
+        if (prev && prev.sig === sig) continue;
         const title = parseAnnotationPbtxt(readFileSync(path, 'utf8'));
-        this.annotations.set(id, { mtimeMs: st.mtimeMs, title });
+        this.annotations.set(id, { sig, title });
+        changed = true;
       } catch {
         // sumiu
       }
     }
-    for (const id of this.annotations.keys()) if (!seen.has(id)) this.annotations.delete(id);
+    for (const id of this.annotations.keys()) {
+      if (!seen.has(id)) {
+        this.annotations.delete(id);
+        changed = true;
+      }
+    }
+    return changed;
   }
 }
 
@@ -465,10 +492,55 @@ export function recentlyModifiedTranscripts(home: string, maxAgeMs: number, now:
   return out;
 }
 
+/** Versão assíncrona de `recentlyModifiedTranscripts` para o histórico (`/api/sessions`). */
+export async function recentlyModifiedTranscriptsAsync(
+  home: string,
+  maxAgeMs: number,
+  now: number = Date.now(),
+): Promise<Array<{ conversationId: string; path: string; mtimeMs: number; size: number }>> {
+  const dir = join(home, BRAIN_DIR);
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: Array<{ conversationId: string; path: string; mtimeMs: number; size: number }> = [];
+  for (const name of names) {
+    if (!isConversationId(name)) continue;
+    const id = name.toLowerCase();
+    const base = join(dir, id);
+    for (const rel of [TRANSCRIPT_REL, TRANSCRIPT_FULL_REL]) {
+      const path = join(base, rel);
+      try {
+        const st = await stat(path);
+        if (!st.isFile() || now - st.mtimeMs > maxAgeMs) break;
+        out.push({ conversationId: id, path, mtimeMs: st.mtimeMs, size: st.size });
+        break;
+      } catch {
+        // tenta próximo
+      }
+    }
+  }
+  return out;
+}
+
 export interface TranscriptHead {
   title?: string;
   cwd?: string;
   firstAt?: number;
+}
+
+/** Extrai o `cwd` de um passo com `tool_calls` (args `Cwd`/`cwd`), desembrulhando valor JSON-stringified. */
+export function extractCwdFromStep(j: Record<string, unknown>): string | undefined {
+  if (!Array.isArray(j.tool_calls)) return undefined;
+  for (const tc of j.tool_calls) {
+    const args = tc && typeof tc === 'object' ? (tc as { args?: Record<string, unknown> }).args : undefined;
+    const rawCwd = args?.Cwd ?? args?.cwd;
+    const unwrapped = unwrapValue(rawCwd);
+    if (typeof unwrapped === 'string' && isAbsolute(unwrapped.trim())) return unwrapped.trim();
+  }
+  return undefined;
 }
 
 /** Lê o início de um `transcript.jsonl`: primeiro prompt (`title`), `firstAt` e algum `Cwd` inicial se houver. */
@@ -497,19 +569,7 @@ export function readTranscriptHead(path: string): TranscriptHead {
           const clean = cleanPromptText(j.content);
           if (clean) head.title = truncate(maskSecrets(clean.slice(0, 1_000)), TITLE_MAX);
         }
-        if (head.cwd === undefined && Array.isArray(j.tool_calls)) {
-          for (const tc of j.tool_calls) {
-            const args = tc && typeof tc === 'object' ? (tc as { args?: Record<string, unknown> }).args : undefined;
-            const rawCwd = args?.Cwd ?? args?.cwd;
-            if (typeof rawCwd === 'string') {
-              const unquoted = rawCwd.startsWith('"') && rawCwd.endsWith('"') ? rawCwd.slice(1, -1) : rawCwd;
-              if (unquoted.startsWith('/')) {
-                head.cwd = unquoted;
-                break;
-              }
-            }
-          }
-        }
+        head.cwd ??= extractCwdFromStep(j);
         if (head.title !== undefined && head.firstAt !== undefined && head.cwd !== undefined) break;
       } catch {
         // linha cortada ou inválida

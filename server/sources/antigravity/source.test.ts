@@ -6,7 +6,7 @@ import { AccountsService } from '../../accounts/service';
 import { NameStore } from '../../model/names';
 import { Office } from '../../model/office';
 import { detectAntigravityAccounts, discoverAntigravityDirs } from './accounts';
-import { parseAnnotationPbtxt } from './files';
+import { parseAnnotationPbtxt, parseSummariesProto } from './files';
 import { AntigravityHistory } from './history';
 import { AntigravitySource } from './source';
 import { createAntigravityTerminalParser } from './terminal';
@@ -243,5 +243,320 @@ describe('Antigravity CLI — contas, transcript, terminal, histórico e fonte',
       title: 'Compatibilidade Antigravity',
       open: true,
     });
+  });
+
+  it('reconhece subagentes pelo transcript do pai (invoke_subagent) sem hooks nem proto e acompanha seu ciclo de vida', () => {
+    const home = makeTempDir();
+    const agyDir = join(home, '.gemini', 'antigravity-cli');
+    const convDir = join(agyDir, 'conversations');
+    const mainLog = join(agyDir, 'brain', CONV_MAIN, '.system_generated', 'logs');
+    const subLog = join(agyDir, 'brain', CONV_SUB, '.system_generated', 'logs');
+    mkdirSync(convDir, { recursive: true });
+    mkdirSync(mainLog, { recursive: true });
+    mkdirSync(subLog, { recursive: true });
+
+    let now = 1_795_500_000_000;
+    writeFileSync(join(convDir, `${CONV_MAIN}.db-wal`), '');
+    writeFileSync(
+      join(agyDir, 'history.jsonl'),
+      `${JSON.stringify({ display: 'auditar', timestamp: now - 5_000, workspace: '/repo/habblaud', conversationId: CONV_MAIN })}\n`,
+    );
+    const mainTranscript = join(mainLog, 'transcript.jsonl');
+    writeFileSync(
+      mainTranscript,
+      `${JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        created_at: new Date(now - 4_000).toISOString(),
+        content: '<USER_REQUEST>\nAuditar o código\n</USER_REQUEST>',
+      })}\n`,
+    );
+
+    const accounts = new AccountsService({ dirs: [], home, env: { HOME: home }, onChange: () => {} });
+    const office = new Office({
+      names: new NameStore(null),
+      version: '1.0.3',
+      startedAt: now - 10_000,
+      accounts: (s) => accounts.list(s),
+      sources: () => src.sources(),
+      accountName: (id) => accounts.find(id)?.detected.name,
+      terminal: true,
+      permissions: () => new Map(),
+      ptys: () => ({ status: { enabled: false }, list: [] }),
+      now: () => now,
+    });
+    const src = new AntigravitySource({ accounts, office, dirs: [agyDir], home, watch: false, now: () => now });
+    src.boot();
+    expect(office.commit().snapshot.agents).toHaveLength(1);
+
+    // Pai dispara invoke_subagent e recebe conversationId no resultado
+    now += 2_000;
+    const subTranscript = join(subLog, 'transcript.jsonl');
+    writeFileSync(
+      subTranscript,
+      [
+        JSON.stringify({
+          step_index: 0,
+          source: 'SYSTEM',
+          type: 'SYSTEM_MESSAGE',
+          status: 'DONE',
+          created_at: new Date(now).toISOString(),
+          content: 'Audit server/sources/antigravity',
+        }),
+        JSON.stringify({
+          step_index: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          created_at: new Date(now + 100).toISOString(),
+          model: 'gemini-4-neon',
+          tool_calls: [{ name: 'read_file', args: { Path: '"/repo/habblaud/README.md"' } }],
+        }),
+      ].join('\n') + '\n',
+    );
+    writeFileSync(
+      mainTranscript,
+      [
+        JSON.stringify({
+          step_index: 0,
+          source: 'USER_EXPLICIT',
+          type: 'USER_INPUT',
+          status: 'DONE',
+          created_at: new Date(now - 6_000).toISOString(),
+          content: '<USER_REQUEST>\nAuditar o código\n</USER_REQUEST>',
+        }),
+        JSON.stringify({
+          step_index: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          created_at: new Date(now - 500).toISOString(),
+          tool_calls: [
+            {
+              name: 'invoke_subagent',
+              args: { Role: '"Antigravity Source Auditor"', TypeName: '"research"', Prompt: '"Audit antigravity"' },
+            },
+          ],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          source: 'MODEL',
+          type: 'GENERIC',
+          status: 'DONE',
+          created_at: new Date(now).toISOString(),
+          content: `Created At: 2026-11-24\nCreated the following subagent:\n{\n  "conversationId":  "${CONV_SUB}",\n  "logAbsoluteUri":  "file://${subTranscript}"\n}`,
+        }),
+      ].join('\n') + '\n',
+    );
+
+    src.poll(false);
+    let snap = office.commit().snapshot;
+    const sub = snap.agents.find((a) => a.kind === 'sub');
+    expect(sub).toBeDefined();
+    expect(sub).toMatchObject({
+      id: `antigravity-cli:${CONV_SUB}`,
+      parentId: `antigravity-cli:${CONV_MAIN}`,
+      role: 'Antigravity Source Auditor',
+      status: 'working',
+    });
+
+    // Subagente termina seu turno -> completeSub (entra em graça/done)
+    now += 3_000;
+    writeFileSync(
+      subTranscript,
+      [
+        JSON.stringify({
+          step_index: 0,
+          source: 'SYSTEM',
+          type: 'SYSTEM_MESSAGE',
+          status: 'DONE',
+          created_at: new Date(now - 3_000).toISOString(),
+          content: 'Audit server/sources/antigravity',
+        }),
+        JSON.stringify({
+          step_index: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          created_at: new Date(now - 2_900).toISOString(),
+          model: 'gemini-4-neon',
+          tool_calls: [{ name: 'read_file', args: { Path: '"/repo/habblaud/README.md"' } }],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          created_at: new Date(now).toISOString(),
+          content: 'Relatório concluído.',
+        }),
+      ].join('\n') + '\n',
+    );
+    src.poll(false);
+    expect(office.isSubDone(`antigravity-cli:${CONV_SUB}`)).toBe(true);
+  });
+
+  it('evita duplo unwrapArgs, pareia pendingCalls em FIFO e respeita PLANNER_RESPONSE RUNNING', () => {
+    const state = createAntigravityState();
+    const parser = createAntigravityTerminalParser();
+    const planner = JSON.stringify({
+      step_index: 1,
+      source: 'MODEL',
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: '2026-11-17T03:01:35Z',
+      tool_calls: [
+        { name: 'grep_search', args: { Query: '"\\"true\\""', SearchPath: '"/app"' } },
+        { name: 'run_command', args: { CommandLine: '"gh pr create --title x"' } },
+        { name: 'read_file', args: { Path: '"/app/a.ts"' } },
+      ],
+    });
+    const rPlanner = parseAntigravityLine(state, planner, { idPrefix: 'agy:1', now: 1_000 });
+    const tEntries = parser.push(planner);
+    // Query desembrulhado uma vez = "\"true\"" (string, não boolean) -> aparece no texto da atividade e do terminal
+    expect(rPlanner.activities[0].activity.text).toContain('true');
+    const grepEntry = tEntries.find((e) => e.kind === 'tool' && e.tool === 'Grep');
+    expect(grepEntry?.kind === 'tool' ? grepEntry.title : '').toContain('true');
+
+    // Resultado 1 (grep), resultado 2 (run_command com erro), resultado 3 (read_file OK)
+    const rGrep = parseAntigravityLine(
+      state,
+      JSON.stringify({ step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-11-17T03:01:36Z', content: 'matches' }),
+      { idPrefix: 'agy:1', now: 1_001 },
+    );
+    expect(rGrep.activities).toEqual([]);
+    const rBash = parseAntigravityLine(
+      state,
+      JSON.stringify({
+        step_index: 3,
+        source: 'MODEL',
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: '2026-11-17T03:01:37Z',
+        content: 'Command exited with code 0.\n\nCommand output:\nhttps://github.com/org/repo/pull/42',
+      }),
+      { idPrefix: 'agy:1', now: 1_002 },
+    );
+    expect(rBash.signals.some((s) => s.type === 'github' && s.event.kind === 'pr_opened')).toBe(true);
+
+    // PLANNER_RESPONSE em RUNNING com texto parcial não fecha turnOpen
+    const rStreaming = parseAntigravityLine(
+      state,
+      JSON.stringify({
+        step_index: 5,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'RUNNING',
+        created_at: '2026-11-17T03:01:38Z',
+        content: 'Parcial...',
+      }),
+      { idPrefix: 'agy:1', now: 1_003 },
+    );
+    expect(rStreaming.signals.some((s) => s.type === 'turnEnd')).toBe(false);
+    expect(state.turnOpen).toBe(true);
+  });
+
+  it('promove main para sub sem agente fantasma, mascara hookTitle, bloqueia hintTranscript arbitrário e respeita stop()', () => {
+    const home = makeTempDir();
+    const agyDir = join(home, '.gemini', 'antigravity-cli');
+    const convDir = join(agyDir, 'conversations');
+    mkdirSync(convDir, { recursive: true });
+    writeFileSync(join(convDir, `${CONV_MAIN}.db-wal`), '');
+    writeFileSync(join(convDir, `${CONV_SUB}.db-wal`), '');
+    writeFileSync(
+      join(agyDir, 'history.jsonl'),
+      [
+        JSON.stringify({ display: 'main', timestamp: 1_795_500_000_000, workspace: '/repo/p', conversationId: CONV_MAIN }),
+        JSON.stringify({ display: 'sub', timestamp: 1_795_500_000_000, workspace: '/repo/p', conversationId: CONV_SUB }),
+      ].join('\n') + '\n',
+    );
+    const now = 1_795_500_001_000;
+    const accounts = new AccountsService({ dirs: [], home, env: { HOME: home }, onChange: () => {} });
+    const office = new Office({
+      names: new NameStore(null),
+      version: '1.0.3',
+      startedAt: now - 5_000,
+      accounts: (s) => accounts.list(s),
+      sources: () => src.sources(),
+      accountName: (id) => accounts.find(id)?.detected.name,
+      terminal: true,
+      permissions: () => new Map(),
+      ptys: () => ({ status: { enabled: false }, list: [] }),
+      now: () => now,
+    });
+    const src = new AntigravitySource({ accounts, office, dirs: [agyDir], home, watch: false, now: () => now });
+    src.boot();
+    expect(office.commit().snapshot.agents.filter((a) => a.kind === 'main')).toHaveLength(2);
+
+    // Hook promove CONV_SUB para subagente com secret no lastUserInput e transcriptPath malicioso
+    expect(
+      src.applyHookEvent('antigravity-cli', {
+        hookEventName: 'PreInvocation',
+        conversationId: CONV_SUB,
+        parentConversationId: CONV_MAIN,
+        agentName: 'research',
+        cwd: '/repo/p',
+        transcriptPath: join(agyDir, 'history.jsonl'),
+        lastUserInput: '<USER_REQUEST>token sk-ant-api03-123456789012345678901234567890</USER_REQUEST>',
+      }),
+    ).toBe(true);
+
+    const snap = office.commit().snapshot;
+    expect(snap.agents.filter((a) => a.id === `antigravity-cli:${CONV_SUB}`)).toHaveLength(1);
+    const sub = snap.agents.find((a) => a.id === `antigravity-cli:${CONV_SUB}`)!;
+    expect(sub.kind).toBe('sub');
+    expect(sub.parentId).toBe(`antigravity-cli:${CONV_MAIN}`);
+    expect(sub.title ?? '').not.toContain('sk-ant-api03');
+    expect(src.transcriptPathOf(`antigravity-cli:${CONV_SUB}`)).toBeUndefined();
+
+    // Após stop(), applyHookEvent retorna false
+    src.stop();
+    expect(
+      src.applyHookEvent('antigravity-cli', {
+        hookEventName: 'PreToolUse',
+        conversationId: CONV_MAIN,
+        toolCall: { name: 'read_file', args: { Path: '/repo/p/a.ts' } },
+      }),
+    ).toBe(false);
+  });
+
+  it('parseSummariesProto decodifica parentConversationId, agentRole, gitBranch e ignora varint truncado', () => {
+    const varint = (n: number) => {
+      const bytes: number[] = [];
+      let v = n;
+      while (v >= 0x80) {
+        bytes.push((v & 0x7f) | 0x80);
+        v >>>= 7;
+      }
+      bytes.push(v);
+      return Buffer.from(bytes);
+    };
+    const fieldVarint = (f: number, v: number) => Buffer.concat([varint((f << 3) | 0), varint(v)]);
+    const fieldBytes = (f: number, b: Buffer | string) => {
+      const buf = typeof b === 'string' ? Buffer.from(b, 'utf8') : b;
+      return Buffer.concat([varint((f << 3) | 2), varint(buf.length), buf]);
+    };
+    const ws = Buffer.concat([fieldBytes(1, 'file:///repo/habblaud'), fieldBytes(4, 'feat/zh-cn')]);
+    const roleMsg = Buffer.concat([fieldBytes(1, 'research'), fieldBytes(2, 'Code Auditor')]);
+    const meta = Buffer.concat([fieldBytes(5, CONV_MAIN), fieldBytes(8, roleMsg)]);
+    const summaryBody = Buffer.concat([fieldVarint(5, 2), fieldBytes(9, ws), fieldBytes(17, meta)]);
+    const entry = Buffer.concat([fieldBytes(1, CONV_SUB), fieldBytes(2, summaryBody)]);
+    const proto = fieldBytes(1, entry);
+
+    const parsed = parseSummariesProto(proto);
+    expect(parsed.get(CONV_SUB)).toMatchObject({
+      conversationId: CONV_SUB,
+      status: 'running',
+      cwd: '/repo/habblaud',
+      gitBranch: 'feat/zh-cn',
+      parentConversationId: CONV_MAIN,
+      agentRole: 'Code Auditor',
+    });
+
+    // Buffer com varint truncado no fim não deve quebrar nem emitir campos corrompidos
+    const truncated = Buffer.from([0x08, 0x80]); // field 1, wire 0, varint sem terminador
+    expect(parseSummariesProto(truncated).size).toBe(0);
   });
 });

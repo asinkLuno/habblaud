@@ -586,8 +586,14 @@ export class Office {
     const now = this.now();
     const existing = this.agents.get(p.id);
     if (existing) {
-      this.reactivateSub(p.id);
-      return true;
+      if (existing.info.kind === 'sub') {
+        this.reactivateSub(p.id);
+        return true;
+      }
+      this.agents.delete(p.id);
+      const occupied = new Set([...this.agents.values()].map((r) => r.info.roomId));
+      for (const rid of [...this.rooms.keys()]) if (!occupied.has(rid)) this.rooms.delete(rid);
+      this.recomputeRoomNames();
     }
     const person = this.deps.names.assign(p.id, this.takenNames());
     const info: AgentInfo = {

@@ -55,10 +55,10 @@ export function defaultAntigravityHome(env: NodeJS.ProcessEnv, home: string): st
  * primeiro, depois alfabética.
  */
 export function discoverAntigravityDirs(env: NodeJS.ProcessEnv = process.env, home: string = env.HOME || homedir()): string[] {
-  const override = splitList(env.HABBLAUD_ANTIGRAVITY_DIRS ?? env.HABBLAUD_AGY_DIRS);
+  const override = splitList(env.HABBLAUD_ANTIGRAVITY_DIRS?.trim() || env.HABBLAUD_AGY_DIRS);
   if (override.length) return [...new Set(override.map((p) => expandHome(p, home)))].filter(isDir);
   const found: string[] = [];
-  const main = defaultAntigravityHome(env, home);
+  const main = expandHome(defaultAntigravityHome(env, home), home);
   if (isAntigravityDir(main)) found.push(main);
   for (const [parent, prefix] of [
     [join(home, '.gemini'), 'antigravity-cli'],
@@ -121,10 +121,11 @@ export function detectAntigravityAccounts(dirs: string[], opts: AntigravityDetec
 
   const partial = dirs.map((dir, i) => {
     const ov = matchOverride(overrides, ids[i], resolve(dir), home);
-    const short = str(ov?.short)?.slice(0, 3) ?? shortcuts.get(resolve(dir));
-    return { dir, id: str(ov?.id) ?? ids[i], ov, short: short && !usedShorts.has(short.toUpperCase()) ? short : undefined };
+    const candShort = str(ov?.short)?.slice(0, 3) ?? shortcuts.get(resolve(dir));
+    const short = candShort && !usedShorts.has(candShort.toUpperCase()) ? candShort : undefined;
+    if (short) usedShorts.add(short.toUpperCase());
+    return { dir, id: str(ov?.id) ?? ids[i], ov, short };
   });
-  for (const p of partial) if (p.short) usedShorts.add(p.short.toUpperCase());
 
   return partial.map((p) => {
     const short = p.short ?? letterCandidates(p.dir).find((l) => !usedShorts.has(l)) ?? '?';
@@ -132,8 +133,8 @@ export function detectAntigravityAccounts(dirs: string[], opts: AntigravityDetec
     let color = str(p.ov?.color);
     if (!color) {
       color = ACCOUNT_COLORS.find((c) => !usedColors.has(c)) ?? ACCOUNT_COLORS[usedColors.size % ACCOUNT_COLORS.length];
-      usedColors.add(color);
     }
+    usedColors.add(color);
     const acc: DetectedAccount = {
       id: p.id,
       provider: 'antigravity',
